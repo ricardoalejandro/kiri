@@ -1,0 +1,97 @@
+http:
+  routers:
+    kiri-api-router:
+      rule: "Host(`kiri.naperu.cloud`) && (PathPrefix(`/api`) || PathPrefix(`/ws`) || PathPrefix(`/health`))"
+      service: kiri-api-service
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+    kiri-api-router-secure:
+      rule: "Host(`kiri.naperu.cloud`) && (PathPrefix(`/api`) || PathPrefix(`/ws`) || PathPrefix(`/health`))"
+      service: kiri-api-service
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      priority: 100
+    kiri-mcp-router:
+      rule: "Host(`kiri.naperu.cloud`) && (PathPrefix(`/mcp`) || PathPrefix(`/.well-known/oauth-authorization-server`) || PathPrefix(`/.well-known/oauth-protected-resource`))"
+      service: kiri-mcp-service
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+    kiri-mcp-router-secure:
+      rule: "Host(`kiri.naperu.cloud`) && (PathPrefix(`/mcp`) || PathPrefix(`/.well-known/oauth-authorization-server`) || PathPrefix(`/.well-known/oauth-protected-resource`))"
+      service: kiri-mcp-service
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      priority: 110
+    kiri-frontend-router:
+      rule: "Host(`kiri.naperu.cloud`)"
+      service: kiri-frontend-service
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+    kiri-frontend-router-secure:
+      rule: "Host(`kiri.naperu.cloud`)"
+      service: kiri-frontend-service
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      priority: 1
+    kiri-landing-router:
+      rule: "Host(`landing.kiri.naperu.cloud`)"
+      service: kiri-frontend-service
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+    kiri-landing-router-secure:
+      rule: "Host(`landing.kiri.naperu.cloud`)"
+      service: kiri-frontend-service
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      priority: 1
+    kiri-minio-router:
+      rule: "Host(`media.kiri.naperu.cloud`)"
+      service: kiri-minio-service
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+    kiri-minio-router-secure:
+      rule: "Host(`media.kiri.naperu.cloud`)"
+      service: kiri-minio-service
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+  services:
+    kiri-api-service:
+      loadBalancer:
+        servers:
+          - url: http://kiri-backend:8080
+        passHostHeader: true
+    kiri-mcp-service:
+      loadBalancer:
+        servers:
+          - url: http://kiri-backend:8081
+        passHostHeader: true
+    kiri-frontend-service:
+      loadBalancer:
+        servers:
+          - url: http://kiri-frontend:3000
+        passHostHeader: true
+    kiri-minio-service:
+      loadBalancer:
+        servers:
+          - url: http://kiri-minio:9000
+        passHostHeader: true

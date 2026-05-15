@@ -1,0 +1,213 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kiri-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kiri}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-kiri}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kiri}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kiri-internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: kiri-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kiri-internal
+
+  minio:
+    image: minio/minio:latest
+    container_name: kiri-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kiriadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kiri-internal
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.routers.kiri-minio.rule=Host(`media.kiri.naperu.cloud`)"
+      - "traefik.http.routers.kiri-minio.entrypoints=websecure"
+      - "traefik.http.routers.kiri-minio.tls=true"
+      - "traefik.http.routers.kiri-minio.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.kiri-minio.service=kiri-minio"
+      - "traefik.http.services.kiri-minio.loadbalancer.server.port=9000"
+      - "traefik.http.routers.kiri-minio-console.rule=Host(`minio.kiri.naperu.cloud`)"
+      - "traefik.http.routers.kiri-minio-console.entrypoints=websecure"
+      - "traefik.http.routers.kiri-minio-console.tls=true"
+      - "traefik.http.routers.kiri-minio-console.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.kiri-minio-console.service=kiri-minio-console"
+      - "traefik.http.services.kiri-minio-console.loadbalancer.server.port=9001"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../deploy/Dockerfile.backend
+    container_name: kiri-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-kiri}:${POSTGRES_PASSWORD}@kiri-postgres:5432/${POSTGRES_DB:-kiri}?sslmode=disable
+      REDIS_URL: redis://kiri-redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 8080
+      ENV: production
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@kiri.naperu.cloud}
+      CORS_ORIGINS: https://kiri.naperu.cloud,https://www.kiri.naperu.cloud,http://localhost:3000,http://localhost:8080
+      MINIO_ENDPOINT: kiri-minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kiriadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: kiri-media
+      MINIO_USE_SSL: "false"
+      MINIO_PUBLIC_URL: https://media.kiri.naperu.cloud
+      # Kommo CRM
+      KOMMO_SUBDOMAIN: ${KOMMO_SUBDOMAIN:-}
+      KOMMO_CLIENT_ID: ${KOMMO_CLIENT_ID:-}
+      KOMMO_CLIENT_SECRET: ${KOMMO_CLIENT_SECRET:-}
+      KOMMO_ACCESS_TOKEN: ${KOMMO_ACCESS_TOKEN:-}
+      KOMMO_REDIRECT_URI: ${KOMMO_REDIRECT_URI:-}
+      KOMMO_PROXY_URL: ${KOMMO_PROXY_URL:-}
+      # Kommo Webhooks
+      KOMMO_WEBHOOK_SECRET: ${KOMMO_WEBHOOK_SECRET:-}
+      PUBLIC_URL: "https://kiri.naperu.cloud"
+      # AI Assistant (Eros)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # Google Contacts sync
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      # SOCKS5 proxy for WhatsApp CDN media uploads (Cloudflare WARP)
+      MEDIA_SOCKS5_PROXY: socks5://host-gateway:40001
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - whatsapp_sessions:/app/sessions
+    mem_limit: 1536m
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - kiri-internal
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.routers.kiri-api.rule=Host(`kiri.naperu.cloud`) && (PathPrefix(`/api`) || PathPrefix(`/ws`) || PathPrefix(`/health`))"
+      - "traefik.http.routers.kiri-api.entrypoints=websecure"
+      - "traefik.http.routers.kiri-api.tls=true"
+      - "traefik.http.routers.kiri-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.kiri-api.loadbalancer.server.port=8080"
+      - "traefik.http.routers.kiri-api.service=kiri-api"
+      - "traefik.http.routers.kiri-api.priority=100"
+      # MCP Server (Model Context Protocol) — SSE transport on port 8081
+      - "traefik.http.routers.kiri-mcp.rule=Host(`kiri.naperu.cloud`) && PathPrefix(`/mcp`)"
+      - "traefik.http.routers.kiri-mcp.entrypoints=websecure"
+      - "traefik.http.routers.kiri-mcp.tls=true"
+      - "traefik.http.routers.kiri-mcp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.kiri-mcp.loadbalancer.server.port=8081"
+      - "traefik.http.routers.kiri-mcp.service=kiri-mcp"
+      - "traefik.http.routers.kiri-mcp.priority=110"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../deploy/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_URL: https://kiri.naperu.cloud
+        NEXT_PUBLIC_WS_URL: wss://kiri.naperu.cloud
+        NEXT_PUBLIC_APP_URL: https://kiri.naperu.cloud
+        NEXT_PUBLIC_MARKETING_URL: https://landing.kiri.naperu.cloud
+    container_name: kiri-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: https://kiri.naperu.cloud
+      NEXT_PUBLIC_WS_URL: wss://kiri.naperu.cloud
+      NEXT_PUBLIC_APP_URL: https://kiri.naperu.cloud
+      NEXT_PUBLIC_MARKETING_URL: https://landing.kiri.naperu.cloud
+    depends_on:
+      - backend
+    networks:
+      - kiri-internal
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.middlewares.kiri-frontend-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.kiri-frontend-https.redirectscheme.permanent=true"
+      - "traefik.http.routers.kiri-frontend-app.rule=Host(`kiri.naperu.cloud`)"
+      - "traefik.http.routers.kiri-frontend-app.entrypoints=websecure"
+      - "traefik.http.routers.kiri-frontend-app.tls=true"
+      - "traefik.http.routers.kiri-frontend-app.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.kiri-frontend-app.service=kiri-frontend"
+      - "traefik.http.routers.kiri-frontend-app.priority=1"
+      - "traefik.http.routers.kiri-frontend-landing.rule=Host(`landing.kiri.naperu.cloud`)"
+      - "traefik.http.routers.kiri-frontend-landing.entrypoints=websecure"
+      - "traefik.http.routers.kiri-frontend-landing.tls=true"
+      - "traefik.http.routers.kiri-frontend-landing.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.kiri-frontend-landing.service=kiri-frontend"
+      - "traefik.http.routers.kiri-frontend-landing.priority=1"
+      - "traefik.http.routers.kiri-frontend-app-http.rule=Host(`kiri.naperu.cloud`)"
+      - "traefik.http.routers.kiri-frontend-app-http.entrypoints=web"
+      - "traefik.http.routers.kiri-frontend-app-http.middlewares=kiri-frontend-https"
+      - "traefik.http.routers.kiri-frontend-app-http.service=kiri-frontend"
+      - "traefik.http.routers.kiri-frontend-landing-http.rule=Host(`landing.kiri.naperu.cloud`)"
+      - "traefik.http.routers.kiri-frontend-landing-http.entrypoints=web"
+      - "traefik.http.routers.kiri-frontend-landing-http.middlewares=kiri-frontend-https"
+      - "traefik.http.routers.kiri-frontend-landing-http.service=kiri-frontend"
+      - "traefik.http.services.kiri-frontend.loadbalancer.server.port=3000"
+
+volumes:
+  postgres_data:
+  redis_data:
+  whatsapp_sessions:
+  minio_data:
+networks:
+  kiri-internal:
+    driver: bridge
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "172.30.0.0/16"
+        - subnet: "fd00:cafe:beef::/48"
+  dokploy-network:
+    external: true
