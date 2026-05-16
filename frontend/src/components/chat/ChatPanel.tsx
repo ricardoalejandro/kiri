@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import type { CSSProperties } from 'react'
 import {
   Send, Paperclip, MoreVertical, Search, Phone, Video,
   ArrowLeft, Smile, Image as ImageIcon, FileText, X,
   Mic, Trash2, Reply, Check, CheckCheck, Download,
-  CornerUpRight, Play, Pause, AlertCircle, BarChart3, User, EyeOff, RefreshCw
+  CornerUpRight, Play, Pause, AlertCircle, BarChart3, User, EyeOff, RefreshCw,
+  Plus, Tag, LockKeyhole, ChevronDown
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -1068,15 +1070,26 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
       )
   }
 
+  const chatBackgroundStyle: CSSProperties = {
+    backgroundColor: '#efeae2',
+    backgroundImage: `
+      radial-gradient(circle at 16px 18px, rgba(134,150,160,0.08) 0 1.4px, transparent 1.5px),
+      radial-gradient(circle at 52px 42px, rgba(134,150,160,0.06) 0 2px, transparent 2.1px),
+      linear-gradient(45deg, transparent 0 45%, rgba(134,150,160,0.035) 45% 55%, transparent 55%),
+      linear-gradient(-45deg, transparent 0 46%, rgba(134,150,160,0.03) 46% 54%, transparent 54%)
+    `,
+    backgroundSize: '96px 96px, 120px 120px, 72px 72px, 88px 88px',
+  }
+
   return (
     <div className={`flex-1 flex flex-col min-h-0 overflow-hidden h-full ${className}`}>
          {/* Chat header */}
-         <div className="h-14 px-4 flex items-center justify-between border-b border-slate-200 bg-white shrink-0">
+         <div className="h-[59px] px-4 flex items-center justify-between border-b border-[#d1d7db] bg-[#f0f2f5] shrink-0">
               <div className="flex items-center gap-3">
                 {onClose && (
                   <button
                     onClick={onClose}
-                    className="p-1.5 hover:bg-slate-200 rounded-lg"
+                    className="p-2 hover:bg-black/5 rounded-full text-[#54656f]"
                   >
                     <ArrowLeft className="w-5 h-5" />
                   </button>
@@ -1086,18 +1099,18 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                   onClick={() => setShowContactInfo(!showContactInfo)}
                 >
                     {chat.contact_avatar_url ? (
-                        <img src={chat.contact_avatar_url} className="w-9 h-9 rounded-full object-cover" alt="" />
+                        <img src={chat.contact_avatar_url} className="w-10 h-10 rounded-full object-cover" alt="" />
                     ) : (
-                        <div className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center">
-                            <User className="w-5 h-5 text-slate-500" />
+                        <div className="w-10 h-10 rounded-full bg-[#dfe5e7] flex items-center justify-center">
+                            <User className="w-5 h-5 text-[#667781]" />
                         </div>
                     )}
                     <div>
-                        <h3 className="font-semibold text-sm text-slate-900 leading-tight">
+                        <h3 className="font-medium text-[16px] text-[#111b21] leading-tight">
                             {getChatDisplayName(chat)}
                         </h3>
                         {contactTyping ? (
-                          <p className="text-xs text-emerald-600 font-medium">
+                          <p className="text-[13px] text-[#008069] font-normal">
                             {contactTyping === 'recording' ? (
                               <span className="flex items-center gap-1">
                                 <Mic className="w-3 h-3" />
@@ -1115,27 +1128,42 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                             )}
                           </p>
                         ) : (
-                          <p className="text-xs text-slate-500">
-                               Click para info
+                          <p className="text-[13px] text-[#667781]">
+                               Click para ver información
                           </p>
                         )}
                     </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-2">
+                   <button
+                     onClick={() => setShowContactInfo(!showContactInfo)}
+                     className="hidden lg:inline-flex items-center gap-2 h-10 px-4 rounded-full border border-[#d1d7db] bg-white text-[#111b21] text-sm font-semibold hover:bg-[#f5f6f6] transition"
+                     title="Etiquetar chat"
+                   >
+                       <Tag className="w-4 h-4" />
+                       Etiquetar chat
+                       <ChevronDown className="w-4 h-4 text-[#54656f]" />
+                   </button>
                    <button
                      onClick={handleRequestHistorySync}
                      disabled={syncingHistory}
-                     className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition disabled:opacity-50"
+                     className="p-2 text-[#54656f] hover:bg-black/5 rounded-full transition disabled:opacity-50"
                      title="Sincronizar historial de mensajes"
                    >
                        <RefreshCw className={`w-5 h-5 ${syncingHistory ? 'animate-spin' : ''}`} />
                    </button>
-                   <button onClick={() => setShowSearch(!showSearch)} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition">
+                   <button className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition" title="Videollamada">
+                       <Video className="w-5 h-5" />
+                   </button>
+                   <button className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition" title="Llamada">
+                       <Phone className="w-5 h-5" />
+                   </button>
+                   <button onClick={() => setShowSearch(!showSearch)} className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition">
                        <Search className="w-5 h-5" />
                    </button>
-                   <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition">
+                   <button className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition">
                        <MoreVertical className="w-5 h-5" />
                    </button>
               </div>
@@ -1147,8 +1175,8 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
              <div
                 ref={messagesContainerRef}
                 onScroll={handleMessagesScroll}
-                className="flex-1 overflow-y-auto bg-[#efeae2] p-4 space-y-2 relative"
-                style={{ backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundRepeat: 'repeat' }}
+                className="flex-1 overflow-y-auto px-[6.5%] py-4 space-y-1.5 relative"
+                style={chatBackgroundStyle}
              >
                   {loadingMore && (
                     <div className="flex justify-center py-3">
@@ -1157,9 +1185,15 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                   )}
                   {!hasMoreMessages && messages.length > 0 && (
                     <div className="flex justify-center py-2">
-                      <span className="text-xs text-slate-400 bg-white/80 px-3 py-1 rounded-full">Inicio de la conversación</span>
+                      <span className="text-xs text-[#667781] bg-white/90 px-3 py-1 rounded-lg shadow-sm">Inicio de la conversación</span>
                     </div>
                   )}
+                  <div className="flex justify-center my-3">
+                    <div className="max-w-[560px] rounded-lg bg-[#fff3c8] px-4 py-2 text-center text-[13px] leading-5 text-[#54656f] shadow-sm">
+                      <LockKeyhole className="inline-block w-3.5 h-3.5 mr-1 -mt-0.5 text-[#54656f]" />
+                      Los mensajes y las llamadas están cifrados de extremo a extremo. Solo las personas en este chat pueden leerlos o escucharlos.
+                    </div>
+                  </div>
                   {messages.map((msg, idx) => {
                       // Date separator between different days
                       let showDateSep = false
@@ -1182,7 +1216,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                           <div key={msg.id}>
                               {showDateSep && isValidDate && (
                                 <div className="flex justify-center my-3">
-                                  <span className="bg-white/90 text-slate-600 text-xs px-3 py-1 rounded-lg shadow-sm font-medium">
+                                  <span className="bg-white/90 text-[#667781] text-xs px-3 py-1 rounded-lg shadow-sm font-medium">
                                     {format(msgDate, "d 'de' MMMM, yyyy", { locale: es })}
                                   </span>
                                 </div>
@@ -1363,7 +1397,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
              <span className="text-sm text-amber-700 font-medium">Solo lectura — dispositivo no conectado</span>
            </div>
          ) : (
-         <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 flex items-end gap-2 relative z-30 shrink-0">
+         <div className="px-4 py-2 bg-[#f0f2f5] flex items-end gap-2 relative z-30 shrink-0">
               {editingMsg && (
                   <div className="absolute bottom-full left-0 right-0 bg-blue-50 p-2 border-t border-blue-400 flex justify-between items-center shadow-sm">
                       <div className="text-xs border-l-4 border-blue-500 pl-2">
@@ -1385,14 +1419,14 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
 
               {/* Attachments Menu */}
               {showAttachments && (
-                  <div className="absolute bottom-16 left-4 bg-white rounded-xl shadow-xl border border-slate-100 p-2 flex flex-col gap-2 animate-in slide-in-from-bottom-2 duration-200">
-                      <button className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg transition text-sm text-slate-700" onClick={() => { fileInputRef.current?.click(); setShowAttachments(false) }}>
+                  <div className="absolute bottom-16 left-5 bg-white rounded-2xl shadow-2xl border border-[#e9edef] p-2 flex flex-col gap-1 animate-in slide-in-from-bottom-2 duration-200 min-w-56">
+                      <button className="flex items-center gap-3 p-3 hover:bg-[#f5f6f6] rounded-xl transition text-sm text-[#111b21]" onClick={() => { fileInputRef.current?.click(); setShowAttachments(false) }}>
                           <ImageIcon className="w-5 h-5 text-purple-500" /> Foto/Video
                       </button>
-                      <button className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg transition text-sm text-slate-700" onClick={() => { docFileInputRef.current?.click(); setShowAttachments(false) }}>
+                      <button className="flex items-center gap-3 p-3 hover:bg-[#f5f6f6] rounded-xl transition text-sm text-[#111b21]" onClick={() => { docFileInputRef.current?.click(); setShowAttachments(false) }}>
                           <FileText className="w-5 h-5 text-blue-500" /> Documento
                       </button>
-                      <button className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg transition text-sm text-slate-700" onClick={() => { setShowContactPicker(true); setShowAttachments(false) }}>
+                      <button className="flex items-center gap-3 p-3 hover:bg-[#f5f6f6] rounded-xl transition text-sm text-[#111b21]" onClick={() => { setShowContactPicker(true); setShowAttachments(false) }}>
                           <User className="w-5 h-5 text-emerald-500" /> Contacto
                       </button>
                   </div>
@@ -1401,14 +1435,14 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
               <input type="file" ref={docFileInputRef} className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar" onChange={handleFileSelect} />
 
               <div className="flex gap-1 pb-1">
-                  <button onClick={() => setShowAttachments(!showAttachments)} className="p-2 text-slate-500 hover:text-emerald-600 transition">
-                      <Paperclip className="w-6 h-6" />
+                  <button onClick={() => setShowAttachments(!showAttachments)} className="p-2.5 text-[#54656f] hover:bg-black/5 rounded-full transition" title="Adjuntar">
+                      <Plus className="w-6 h-6" />
                   </button>
                   <EmojiPicker
                     onEmojiSelect={(emoji) => setMessageText(prev => prev + emoji)}
                     isOpen={activePopup === 'emoji'}
                     onToggle={() => setActivePopup(activePopup === 'emoji' ? null : 'emoji')}
-                    buttonClassName={`p-2 transition ${activePopup === 'emoji' ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}
+                    buttonClassName={`p-2.5 rounded-full transition ${activePopup === 'emoji' ? 'text-[#008069] bg-black/5' : 'text-[#54656f] hover:bg-black/5'}`}
                   />
                   <StickerPicker
                       onStickerSelect={handleSendSticker}
@@ -1417,7 +1451,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                   />
                   <button
                       onClick={() => setShowPollModal(true)}
-                      className="p-2 text-slate-500 hover:text-emerald-600 hover:bg-slate-100 rounded-lg transition-colors"
+                      className="p-2.5 text-[#54656f] hover:bg-black/5 rounded-full transition-colors"
                       title="Crear encuesta"
                   >
                       <BarChart3 className="w-5 h-5" />
@@ -1439,6 +1473,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                       placeholder="Escribe un mensaje... ( / para respuestas rápidas)"
                       onKeyDown={handleKeyDown}
                       singleLine
+                      className="border-0 rounded-[22px] min-h-[44px] focus:ring-0 bg-white text-[15px] px-4 py-2.5"
                     />
               </div>
 
@@ -1446,7 +1481,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                   <button
                     onClick={handleSendMessage}
                     disabled={sendingMessage}
-                    className="p-3 bg-emerald-600 text-white rounded-full hover:bg-emerald-700 disabled:opacity-50 transition shadow-md"
+                    className="p-3 bg-[#111b21] text-white rounded-full hover:bg-[#202c33] disabled:opacity-50 transition shadow-md"
                   >
                       <Send className="w-5 h-5" />
                   </button>
@@ -1455,7 +1490,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
                     onMouseDown={startRecording}
                     onMouseUp={stopRecording}
                     onMouseLeave={cancelRecording}
-                    className={`p-3 rounded-full transition shadow-md ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+                    className={`p-3 rounded-full transition shadow-md ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-[#111b21] text-white hover:bg-[#202c33]'}`}
                   >
                       {isRecording ? <div className="w-5 h-5 flex items-center justify-center font-mono text-xs">{formatTime(recordingDuration)}</div> : <Mic className="w-5 h-5" />}
                   </button>

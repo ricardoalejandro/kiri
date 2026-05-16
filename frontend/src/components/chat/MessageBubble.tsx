@@ -523,9 +523,9 @@ export default function MessageBubble({ message, contactName, onMediaClick, onRe
   // Revoked message — show "deleted" placeholder
   if (message.is_revoked) {
     return (
-      <div className={`group flex ${message.is_from_me ? 'justify-end' : 'justify-start'}`}>
-        <div className={`max-w-[85%] sm:max-w-[70%] px-3 py-1.5 rounded-xl shadow-sm ${
-          message.is_from_me ? 'bg-[#d9fdd3] rounded-br-none' : 'bg-white rounded-bl-none'
+      <div className={`group flex ${message.is_from_me ? 'justify-end' : 'justify-start'} px-1`}>
+        <div className={`max-w-[86%] sm:max-w-[64%] px-3 py-1.5 rounded-[7.5px] shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] ${
+          message.is_from_me ? 'bg-[#d9fdd3]' : 'bg-white'
         }`}>
           <div className="flex items-center gap-1.5">
             <Ban className="w-3.5 h-3.5 text-slate-400" />
@@ -542,9 +542,9 @@ export default function MessageBubble({ message, contactName, onMediaClick, onRe
   }
 
   return (
-    <div className={`group flex ${message.is_from_me ? 'justify-end' : 'justify-start'}`}>
+    <div className={`group flex ${message.is_from_me ? 'justify-end' : 'justify-start'} px-1`}>
       {/* Wrapper for message bubble + hover controls + reaction popup */}
-      <div className="relative max-w-[85%] sm:max-w-[70%]">
+      <div className="relative max-w-[86%] sm:max-w-[64%]">
       <div
         className={`${
           message.message_type === 'sticker'
@@ -552,15 +552,15 @@ export default function MessageBubble({ message, contactName, onMediaClick, onRe
             : isEmojiOnly
               ? 'py-0.5'
               : hasVisualMedia
-                ? `max-w-[330px] rounded-xl shadow-sm overflow-hidden ${
+                ? `max-w-[330px] rounded-[7.5px] shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] overflow-hidden ${
                     message.is_from_me
-                      ? 'bg-[#d9fdd3] rounded-br-none'
-                      : 'bg-white rounded-bl-none'
+                      ? 'bg-[#d9fdd3]'
+                      : 'bg-white'
                   }`
-                : `px-3 py-1.5 rounded-xl shadow-sm ${
+                : `px-3 py-1.5 rounded-[7.5px] shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] ${
                     message.is_from_me
-                      ? 'bg-[#d9fdd3] rounded-br-none'
-                      : 'bg-white rounded-bl-none'
+                      ? 'bg-[#d9fdd3]'
+                      : 'bg-white'
                   }`
         }`}
       >
@@ -633,8 +633,8 @@ export default function MessageBubble({ message, contactName, onMediaClick, onRe
               ))}
             </div>
           ) : (
-            <p
-              className={`text-slate-900 whitespace-pre-wrap break-words text-[14.5px] leading-[19px] ${hasVisualMedia ? 'px-3 pt-1' : ''}`}
+          <p
+              className={`text-[#111b21] whitespace-pre-wrap break-words text-[14.2px] leading-[19px] ${hasVisualMedia ? 'px-3 pt-1' : ''}`}
               onCopy={(e) => {
                 const sel = window.getSelection()
                 if (!sel || sel.rangeCount === 0) return
@@ -669,7 +669,7 @@ export default function MessageBubble({ message, contactName, onMediaClick, onRe
               editado
             </span>
           )}
-          <span className={`text-[11px] ${message.message_type === 'sticker' ? 'text-white' : 'text-slate-500'}`}>
+          <span className={`text-[11px] ${message.message_type === 'sticker' ? 'text-white' : 'text-[#667781]'}`}>
             {formatTime(message.timestamp)}
           </span>
           {renderStatus()}
