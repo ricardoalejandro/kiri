@@ -135,7 +135,7 @@ func Migrate(db *pgxpool.Pool) error {
 			status VARCHAR(50) DEFAULT 'sent',
 			timestamp TIMESTAMPTZ NOT NULL,
 			created_at TIMESTAMPTZ DEFAULT NOW(),
-			UNIQUE(account_id, device_id, message_id)
+			UNIQUE(chat_id, message_id)
 		)`,
 
 		// Leads table
