@@ -2,11 +2,12 @@ import { test, expect, Page } from '@playwright/test';
 
 const BASE = process.env.BASE_URL || 'http://localhost:3000';
 const USERNAME = 'ricardo';
-const PASSWORD = 'Ricardo123@';
+const PASSWORD = process.env.E2E_PASSWORD || '';
 const ACCOUNT_NAME = 'difusion_iquitos';
 
 async function login(page: Page) {
   await page.goto(BASE + '/');
+  if (!PASSWORD) throw new Error('E2E_PASSWORD is required');
   // Wait for login form
   await page.waitForLoadState('networkidle');
   // Login fields - try common selectors

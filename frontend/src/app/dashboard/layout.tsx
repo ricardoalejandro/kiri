@@ -6,7 +6,7 @@ import Link from 'next/link'
 import NotificationProvider from '@/components/NotificationProvider'
 import ErosAssistant from '@/components/ErosAssistant'
 import TaskBadge from '@/components/TaskBadge'
-import { subscribeWebSocket, onServerVersionChange, initIdleTimeout, clearIdleTimeout, tryRefreshToken, clearAuthState } from '@/lib/api'
+import { subscribeWebSocket, onServerVersionChange, initIdleTimeout, clearIdleTimeout, tryRefreshToken, clearAuthState, markAuthSession } from '@/lib/api'
 import {
   MessageSquare,
   Settings,
@@ -19,14 +19,10 @@ import {
   PanelLeftOpen,
   Megaphone,
   Tags,
-  CalendarDays,
   Shield,
   ChevronsUpDown,
   Building2,
-  GraduationCap,
   Zap,
-  FileQuestion,
-  Dices,
   RefreshCw,
   FileText,
   CheckSquare,
@@ -54,7 +50,6 @@ interface User {
   subscription_reason?: string
   subscription_days_left?: number | null
   permissions?: string[]
-  kommo_enabled?: boolean
 }
 
 interface UserAccount {
@@ -146,25 +141,22 @@ export default function DashboardLayout({
           }
         }
 
-        const currentToken = localStorage.getItem('token')
-        const res = await fetch('/api/me', {
-          headers: { Authorization: `Bearer ${currentToken}` },
+		const res = await fetch('/api/me', {
+          credentials: 'include',
         })
 
         if (!res.ok) {
           // Try refreshing the token
           const refreshed = await tryRefreshToken()
           if (refreshed) {
-            const newToken = localStorage.getItem('token')
             const retryRes = await fetch('/api/me', {
-              headers: { Authorization: `Bearer ${newToken}` },
+              credentials: 'include',
             })
             if (retryRes.ok) {
               const retryData = await retryRes.json()
               if (retryData.success) {
                 setUser(retryData.user)
                 if (retryData.accounts) setAccounts(retryData.accounts)
-                localStorage.setItem('kommo_enabled', String(retryData.user.kommo_enabled || false))
                 initIdleTimeout()
                 return
               }
@@ -179,7 +171,6 @@ export default function DashboardLayout({
         if (data.success) {
           setUser(data.user)
           if (data.accounts) setAccounts(data.accounts)
-          localStorage.setItem('kommo_enabled', String(data.user.kommo_enabled || false))
           initIdleTimeout() // Start idle timeout detector
         } else {
           clearAuthState()
@@ -268,31 +259,26 @@ export default function DashboardLayout({
   }
 
   const handleLogout = async () => {
-    const token = localStorage.getItem('token')
     clearIdleTimeout()
     clearAuthState()
     await fetch('/api/auth/logout', {
       method: 'POST',
       credentials: 'include',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     router.push('/login')
   }
 
   const handleSwitchAccount = async (accountId: string) => {
-    const token = localStorage.getItem('token')
-    if (!token) return
     try {
       const res = await fetch('/api/auth/switch-account', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account_id: accountId }),
         credentials: 'include',
       })
       const data = await res.json()
       if (data.success) {
-        localStorage.setItem('token', data.token)
-        localStorage.setItem('kommo_enabled', String(data.user.kommo_enabled || false))
+        markAuthSession()
         setUser(data.user)
         setShowAccountSwitcher(false)
         window.location.href = '/dashboard'
@@ -306,15 +292,11 @@ export default function DashboardLayout({
   const MODULE_PERMS: Record<string, string> = {
     '/dashboard/chats': 'chats',
     '/dashboard/contacts': 'contacts',
-    '/dashboard/programs': 'programs',
     '/dashboard/automations': 'automations',
     '/dashboard/bots': 'bots',
     '/dashboard/devices': 'devices',
     '/dashboard/leads': 'leads',
-    '/dashboard/events': 'events',
     '/dashboard/broadcasts': 'broadcasts',
-    '/dashboard/surveys': 'surveys',
-    '/dashboard/dynamics': 'dynamics',
     '/dashboard/tasks': 'tasks',
     '/dashboard/documents': 'documents',
     '/dashboard/tags': 'tags',
@@ -335,16 +317,12 @@ export default function DashboardLayout({
     { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard', desc: 'Panel principal' },
     { href: '/dashboard/chats', icon: MessageSquare, label: 'Chats', desc: 'Conversaciones WhatsApp' },
     { href: '/dashboard/contacts', icon: Contact, label: 'Contactos', desc: 'Directorio de contactos' },
-    { href: '/dashboard/programs', icon: GraduationCap, label: 'Programas', desc: 'Programas educativos' },
     { href: '/dashboard/automations', icon: Zap, label: 'Automatizaciones', desc: 'Flujos automáticos' },
     { href: '/dashboard/bots', icon: Bot, label: 'Bots', desc: 'Respuestas conversacionales' },
     { href: '/dashboard/devices', icon: Smartphone, label: 'Dispositivos', desc: 'Canales WhatsApp' },
     { href: '/dashboard/leads', icon: UserPlus, label: 'Leads', desc: 'Prospectos y oportunidades' },
-    { href: '/dashboard/events', icon: CalendarDays, label: 'Eventos', desc: 'Gestión de eventos' },
     { href: '/dashboard/broadcasts', icon: Megaphone, label: 'Difusión', desc: 'Mensajes masivos' },
-    { href: '/dashboard/surveys', icon: FileQuestion, label: 'Encuestas', desc: 'Formularios y encuestas' },
     { href: '/dashboard/tasks', icon: CheckSquare, label: 'Tareas', desc: 'Pendientes y seguimiento' },
-    { href: '/dashboard/dynamics', icon: Dices, label: 'Dinámicas', desc: 'Actividades interactivas' },
     { href: '/dashboard/documents', icon: Stamp, label: 'Plantillas', desc: 'Editor de plantillas' },
     { href: '/dashboard/tags', icon: Tags, label: 'Etiquetas', desc: 'Organización por etiquetas' },
     { href: '/dashboard/storage', icon: HardDrive, label: 'Almacenamiento', desc: 'Archivos y espacio' },

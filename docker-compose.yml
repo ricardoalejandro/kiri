@@ -59,12 +59,6 @@ services:
       - "traefik.http.routers.kiri-minio.tls.certresolver=letsencrypt"
       - "traefik.http.routers.kiri-minio.service=kiri-minio"
       - "traefik.http.services.kiri-minio.loadbalancer.server.port=9000"
-      - "traefik.http.routers.kiri-minio-console.rule=Host(`minio.kiri.naperu.cloud`)"
-      - "traefik.http.routers.kiri-minio-console.entrypoints=websecure"
-      - "traefik.http.routers.kiri-minio-console.tls=true"
-      - "traefik.http.routers.kiri-minio-console.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.kiri-minio-console.service=kiri-minio-console"
-      - "traefik.http.services.kiri-minio-console.loadbalancer.server.port=9001"
 
   backend:
     build:
@@ -81,22 +75,13 @@ services:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@kiri.naperu.cloud}
-      CORS_ORIGINS: https://kiri.naperu.cloud,https://www.kiri.naperu.cloud,http://localhost:3000,http://localhost:8080
+      CORS_ORIGINS: https://kiri.naperu.cloud,https://www.kiri.naperu.cloud
       MINIO_ENDPOINT: kiri-minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kiriadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: kiri-media
       MINIO_USE_SSL: "false"
       MINIO_PUBLIC_URL: https://media.kiri.naperu.cloud
-      # Kommo CRM
-      KOMMO_SUBDOMAIN: ${KOMMO_SUBDOMAIN:-}
-      KOMMO_CLIENT_ID: ${KOMMO_CLIENT_ID:-}
-      KOMMO_CLIENT_SECRET: ${KOMMO_CLIENT_SECRET:-}
-      KOMMO_ACCESS_TOKEN: ${KOMMO_ACCESS_TOKEN:-}
-      KOMMO_REDIRECT_URI: ${KOMMO_REDIRECT_URI:-}
-      KOMMO_PROXY_URL: ${KOMMO_PROXY_URL:-}
-      # Kommo Webhooks
-      KOMMO_WEBHOOK_SECRET: ${KOMMO_WEBHOOK_SECRET:-}
       PUBLIC_URL: "https://kiri.naperu.cloud"
       # AI Assistant (Eros)
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -139,14 +124,6 @@ services:
       - "traefik.http.services.kiri-api.loadbalancer.server.port=8080"
       - "traefik.http.routers.kiri-api.service=kiri-api"
       - "traefik.http.routers.kiri-api.priority=100"
-      # MCP Server (Model Context Protocol) — SSE transport on port 8081
-      - "traefik.http.routers.kiri-mcp.rule=Host(`kiri.naperu.cloud`) && PathPrefix(`/mcp`)"
-      - "traefik.http.routers.kiri-mcp.entrypoints=websecure"
-      - "traefik.http.routers.kiri-mcp.tls=true"
-      - "traefik.http.routers.kiri-mcp.tls.certresolver=letsencrypt"
-      - "traefik.http.services.kiri-mcp.loadbalancer.server.port=8081"
-      - "traefik.http.routers.kiri-mcp.service=kiri-mcp"
-      - "traefik.http.routers.kiri-mcp.priority=110"
 
   frontend:
     build:
@@ -156,14 +133,14 @@ services:
         NEXT_PUBLIC_API_URL: https://kiri.naperu.cloud
         NEXT_PUBLIC_WS_URL: wss://kiri.naperu.cloud
         NEXT_PUBLIC_APP_URL: https://kiri.naperu.cloud
-        NEXT_PUBLIC_MARKETING_URL: https://landing.kiri.naperu.cloud
+        NEXT_PUBLIC_MARKETING_URL: https://kiri.naperu.cloud
     container_name: kiri-frontend
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: https://kiri.naperu.cloud
       NEXT_PUBLIC_WS_URL: wss://kiri.naperu.cloud
       NEXT_PUBLIC_APP_URL: https://kiri.naperu.cloud
-      NEXT_PUBLIC_MARKETING_URL: https://landing.kiri.naperu.cloud
+      NEXT_PUBLIC_MARKETING_URL: https://kiri.naperu.cloud
     depends_on:
       - backend
     networks:

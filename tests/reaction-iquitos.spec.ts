@@ -1,15 +1,17 @@
 import { test, expect } from '@playwright/test';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:3001';
+const E2E_PASSWORD = process.env.E2E_PASSWORD || '';
 
 test('Reaction filter on difusion_iquitos with screenshots', async ({ page }) => {
   test.setTimeout(60_000);
+  if (!E2E_PASSWORD) throw new Error('E2E_PASSWORD is required');
 
   // Login
   await page.goto(BASE + '/');
   await page.waitForLoadState('networkidle');
   await page.locator('input[type="text"], input[type="email"]').first().fill('ricardo');
-  await page.locator('input[type="password"]').first().fill('Ricardo123@');
+  await page.locator('input[type="password"]').first().fill(E2E_PASSWORD);
   await page.locator('button[type="submit"]').first().click();
   await page.waitForURL(/\/dashboard/, { timeout: 15000 });
 
@@ -20,7 +22,7 @@ test('Reaction filter on difusion_iquitos with screenshots', async ({ page }) =>
     const loginRes = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'ricardo', password: 'Ricardo123@' }),
+      body: JSON.stringify({ username: 'ricardo', password: E2E_PASSWORD }),
     }).then(r => r.json());
     const accounts = loginRes.accounts || [];
     const target = accounts.find((a: any) => a.account_name === 'difusion_iquitos');

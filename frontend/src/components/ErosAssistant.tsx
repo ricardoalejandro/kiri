@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { Send, X, Minimize2, Maximize2, Sparkles, MessageSquarePlus, Trash2, FileSpreadsheet, FileText, Settings, Key, ExternalLink, Loader2, CheckCircle2, XCircle, Menu, BarChart3, Download, ChevronsUpDown } from 'lucide-react'
 import ErosCat, { CatMood } from './ErosCat'
 import ErosChart, { parseChartBlocks, type ChartConfig } from './ErosChart'
+import { downloadCsv } from '@/utils/csv'
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -696,21 +697,13 @@ export default function ErosAssistant({ isOpenProp = false, onClose }: { isOpenP
       const dataRows = lines.slice(1).filter(l => !l.match(/^\|[\s-|]+\|$/))
 
       if (format === 'excel') {
-        const xlsxMod = await import('xlsx')
-        const XLSX = xlsxMod.default || xlsxMod
-        const fileSaver = await import('file-saver')
-        const saveAs = fileSaver.saveAs || fileSaver.default?.saveAs
         const rows = dataRows.map(row => {
           const cells = row.split('|').filter(c => c.trim()).map(c => c.trim())
           const obj: Record<string, string> = {}
           headers.forEach((h, i) => { obj[h] = cells[i] || '' })
           return obj
         })
-        const ws = XLSX.utils.json_to_sheet(rows)
-        const wb = XLSX.utils.book_new()
-        XLSX.utils.book_append_sheet(wb, ws, 'Reporte')
-        const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-        saveAs(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'reporte_eros.xlsx')
+        downloadCsv(rows, 'reporte_eros.csv')
       } else {
         const fileSaver = await import('file-saver')
         const saveAs = fileSaver.saveAs || fileSaver.default?.saveAs

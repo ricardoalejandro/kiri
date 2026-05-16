@@ -185,11 +185,9 @@ export default function TaskInlineCard({
     setShowDatePicker(false)
   }
 
-  // Origin badge helper — smart navigation with auto-select + scroll to tasks
+  // Origin badge helper with navigation only for active modules.
   const getOriginBadge = () => {
     if (task.lead_id) return { icon: '👤', label: task.lead_name || 'Lead', href: `/dashboard/leads?lead_id=${task.lead_id}&scroll=tasks`, color: 'bg-slate-100 text-slate-600 hover:bg-slate-200' }
-    if (task.event_id) return { icon: '📅', label: task.event_name || 'Evento', href: `/dashboard/events/${task.event_id}`, color: 'bg-purple-50 text-purple-600 hover:bg-purple-100' }
-    if (task.program_id) return { icon: '📚', label: task.program_name || 'Programa', href: `/dashboard/programs/${task.program_id}`, color: 'bg-blue-50 text-blue-600 hover:bg-blue-100' }
     if (task.contact_id) return { icon: '💬', label: task.contact_name || 'Contacto', href: `/dashboard/contacts?contact_id=${task.contact_id}&scroll=tasks`, color: 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100' }
     return null
   }

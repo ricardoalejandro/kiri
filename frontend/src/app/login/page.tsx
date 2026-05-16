@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowRight, Eye, EyeOff, Lock, MessageSquare, User, ArrowLeft } from 'lucide-react'
+import { markAuthSession } from '@/lib/api'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -29,7 +30,7 @@ export default function LoginPage() {
         setError(data.error || 'Error al iniciar sesión')
         return
       }
-      localStorage.setItem('token', data.token)
+      markAuthSession()
       router.push('/dashboard')
       router.refresh()
     } catch {

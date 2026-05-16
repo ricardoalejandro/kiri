@@ -60,6 +60,7 @@ temp/
 
 # Go
 /backend/kiri
+*.tsbuildinfo
 kommo_export_leads_2026-02-14.csv
 backups/*.sql
 

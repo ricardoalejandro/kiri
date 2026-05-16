@@ -1,8 +1,8 @@
 /**
- * Event Export Utilities — Excel & CSV exports for events
+ * Event export utilities for CSV downloads.
  */
-import * as XLSX from 'xlsx'
 import { saveAs } from 'file-saver'
+import { rowsToCsv } from './csv'
 
 interface ExportEvent {
   id: string; name: string; description?: string; event_date?: string; event_end?: string
@@ -62,28 +62,13 @@ function buildRows(participants: ExportParticipant[]) {
 
 export function exportToExcel(event: ExportEvent, participants: ExportParticipant[]) {
   const rows = buildRows(participants)
-
-  const wb = XLSX.utils.book_new()
-
-  // Participants sheet
-  const ws = XLSX.utils.json_to_sheet(rows)
-  ws['!cols'] = [
-    { wch: 4 }, { wch: 25 }, { wch: 20 }, { wch: 15 }, { wch: 15 },
-    { wch: 25 }, { wch: 6 }, { wch: 14 }, { wch: 20 }, { wch: 30 },
-    { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 },
-  ]
-  XLSX.utils.book_append_sheet(wb, ws, 'Participantes')
-
-  const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-  saveAs(blob, `${sanitizeFilename(event.name)}_participantes.xlsx`)
+  const blob = new Blob(['\uFEFF' + rowsToCsv(rows)], { type: 'text/csv;charset=utf-8' })
+  saveAs(blob, `${sanitizeFilename(event.name)}_participantes.csv`)
 }
 
 export function exportToCSV(event: ExportEvent, participants: ExportParticipant[]) {
   const rows = buildRows(participants)
-  const ws = XLSX.utils.json_to_sheet(rows)
-  const csv = XLSX.utils.sheet_to_csv(ws)
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+  const blob = new Blob(['\uFEFF' + rowsToCsv(rows)], { type: 'text/csv;charset=utf-8' })
   saveAs(blob, `${sanitizeFilename(event.name)}_participantes.csv`)
 }
 

@@ -1,14 +1,12 @@
 package api
 
 import (
-	"log"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/naperu/kiri/internal/domain"
 	"github.com/naperu/kiri/internal/service"
-	"github.com/naperu/kiri/pkg/database"
 )
 
 type registerRequest struct {
@@ -40,12 +38,6 @@ func (s *Server) handleRegister(c *fiber.Ctx) error {
 		return c.Status(status).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
-	if result != nil && result.Account != nil {
-		if err := database.SeedTemplateSurveysForAccount(s.repos.DB(), result.Account.ID.String()); err != nil {
-			log.Printf("[API] Warning: failed to seed template surveys for signup account %s: %v", result.Account.ID, err)
-		}
-	}
-
 	token, refreshToken, user, userAccounts, err := s.services.Auth.Login(c.Context(), strings.TrimSpace(req.Email), req.Password, s.cfg.JWTSecret)
 	if err != nil {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "account": result.Account, "requires_login": true})
@@ -65,7 +57,6 @@ func (s *Server) handleRegister(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"success":      true,
-		"token":        token,
 		"account":      result.Account,
 		"subscription": result.Subscription,
 		"user": fiber.Map{

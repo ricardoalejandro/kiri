@@ -39,22 +39,15 @@ type Repositories struct {
 	Poll               *PollRepository
 	CampaignAttachment *CampaignAttachmentRepository
 	QuickReply         *QuickReplyRepository
-	Program            *ProgramRepository
-	ProgramFolder      *ProgramFolderRepository
 	Role               *RoleRepository
-	Logbook            *LogbookRepository
-	APIKey             *APIKeyRepository
 	ErosConversation   *ErosConversationRepository
 	AIToken            *AITokenRepository
 	Automation         *AutomationRepository
-	Survey             *SurveyRepository
-	Dynamic            *DynamicRepository
 	Task               *TaskRepository
 	DocumentTemplate   *DocumentTemplateRepository
 	CustomField        *CustomFieldRepository
 	WhatsAppAPI        *WhatsAppAPIRepository
 	Bot                *BotRepository
-	Integration        *IntegrationRepository
 	MediaAsset         *MediaAssetRepository
 }
 
@@ -84,22 +77,15 @@ func NewRepositories(db *pgxpool.Pool) *Repositories {
 		Poll:               &PollRepository{db: db},
 		CampaignAttachment: &CampaignAttachmentRepository{db: db},
 		QuickReply:         &QuickReplyRepository{db: db},
-		Program:            &ProgramRepository{db: db},
-		ProgramFolder:      &ProgramFolderRepository{db: db},
 		Role:               &RoleRepository{db: db},
-		Logbook:            &LogbookRepository{db: db},
-		APIKey:             &APIKeyRepository{db: db},
 		ErosConversation:   &ErosConversationRepository{db: db},
 		AIToken:            &AITokenRepository{db: db},
 		Automation:         &AutomationRepository{db: db},
-		Survey:             &SurveyRepository{db: db},
-		Dynamic:            &DynamicRepository{db: db},
 		Task:               &TaskRepository{db: db},
 		DocumentTemplate:   &DocumentTemplateRepository{db: db},
 		CustomField:        &CustomFieldRepository{db: db},
 		WhatsAppAPI:        &WhatsAppAPIRepository{db: db},
 		Bot:                &BotRepository{db: db},
-		Integration:        &IntegrationRepository{db: db},
 		MediaAsset:         &MediaAssetRepository{db: db},
 	}
 }
@@ -212,9 +198,16 @@ func (r *UserRepository) Create(ctx context.Context, user *domain.User) error {
 
 func (r *UserRepository) Update(ctx context.Context, user *domain.User) error {
 	_, err := r.db.Exec(ctx, `
-		UPDATE users SET username = $2, email = $3, display_name = $4, is_admin = $5, role = $6, updated_at = NOW()
+		UPDATE users
+		SET username = $2,
+			email = $3,
+			display_name = $4,
+			is_admin = $5,
+			role = $6,
+			is_super_admin = $7,
+			updated_at = NOW()
 		WHERE id = $1
-	`, user.ID, user.Username, user.Email, user.DisplayName, user.IsAdmin, user.Role)
+	`, user.ID, user.Username, user.Email, user.DisplayName, user.IsAdmin, user.Role, user.IsSuperAdmin)
 	return err
 }
 
@@ -262,7 +255,7 @@ type UserAccountRepository struct {
 func (r *UserAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*domain.UserAccount, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT ua.id, ua.user_id, ua.account_id, ua.role, ua.is_default, ua.created_at,
-		       a.name, COALESCE(a.slug, ''), COALESCE(a.mcp_enabled, false),
+		       a.name, COALESCE(a.slug, ''),
 		       ua.role_id, COALESCE(ro.name, ''), COALESCE(ro.permissions, '{}')
 		FROM user_accounts ua
 		JOIN accounts a ON a.id = ua.account_id
@@ -279,7 +272,7 @@ func (r *UserAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUI
 	for rows.Next() {
 		ua := &domain.UserAccount{}
 		if err := rows.Scan(&ua.ID, &ua.UserID, &ua.AccountID, &ua.Role, &ua.IsDefault, &ua.CreatedAt,
-			&ua.AccountName, &ua.AccountSlug, &ua.AccountMCPEnabled, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
+			&ua.AccountName, &ua.AccountSlug, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, ua)
@@ -290,7 +283,7 @@ func (r *UserAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUI
 func (r *UserAccountRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID) ([]*domain.UserAccount, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT ua.id, ua.user_id, ua.account_id, ua.role, ua.is_default, ua.created_at,
-		       a.name, COALESCE(a.slug, ''), COALESCE(a.mcp_enabled, false),
+		       a.name, COALESCE(a.slug, ''),
 		       ua.role_id, COALESCE(ro.name, ''), COALESCE(ro.permissions, '{}')
 		FROM user_accounts ua
 		JOIN accounts a ON a.id = ua.account_id
@@ -307,7 +300,7 @@ func (r *UserAccountRepository) GetByAccountID(ctx context.Context, accountID uu
 	for rows.Next() {
 		ua := &domain.UserAccount{}
 		if err := rows.Scan(&ua.ID, &ua.UserID, &ua.AccountID, &ua.Role, &ua.IsDefault, &ua.CreatedAt,
-			&ua.AccountName, &ua.AccountSlug, &ua.AccountMCPEnabled, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
+			&ua.AccountName, &ua.AccountSlug, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, ua)
@@ -376,16 +369,10 @@ func (r *UserAccountRepository) NormalizeForUser(ctx context.Context, userID uui
 		)
 		UPDATE users u
 		SET account_id = chosen.account_id,
-			role = chosen.role,
-			is_admin = CASE
-				WHEN u.is_super_admin THEN TRUE
-				ELSE chosen.role IN ('admin', 'super_admin')
-			END,
-			is_super_admin = CASE
-				WHEN chosen.role = 'super_admin' THEN TRUE
-				ELSE u.is_super_admin
-			END,
-			updated_at = NOW()
+				role = chosen.role,
+				is_admin = chosen.role IN ('admin', 'super_admin'),
+				is_super_admin = chosen.role = 'super_admin',
+				updated_at = NOW()
 		FROM chosen
 		WHERE u.id = $1
 	`, userID); err != nil {
@@ -446,7 +433,7 @@ func (r *UserAccountRepository) GetUserPermissions(ctx context.Context, userID, 
 }
 
 func (r *UserAccountRepository) UpdateRole(ctx context.Context, userID, accountID uuid.UUID, role string) error {
-	_, err := r.db.Exec(ctx, `UPDATE user_accounts SET role = $3 WHERE user_id = $1 AND account_id = $2`, userID, accountID, role)
+	_, err := r.db.Exec(ctx, `UPDATE user_accounts SET role = $3, role_id = NULL WHERE user_id = $1 AND account_id = $2`, userID, accountID, role)
 	return err
 }
 
@@ -472,7 +459,7 @@ type AccountRepository struct {
 
 func (r *AccountRepository) GetAll(ctx context.Context) ([]*domain.Account, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT a.id, a.name, COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices, COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true), COALESCE(a.mcp_enabled, false), COALESCE(a.kommo_enabled, false), a.created_at, a.updated_at,
+		SELECT a.id, a.name, COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices, COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true), a.created_at, a.updated_at,
 			COALESCE(s.status, 'active'), s.trial_ends_at, s.current_period_end, s.grace_ends_at,
 			(SELECT COUNT(*) FROM user_accounts WHERE account_id = a.id) as user_count,
 			(SELECT COUNT(*) FROM devices WHERE account_id = a.id) as device_count,
@@ -489,7 +476,7 @@ func (r *AccountRepository) GetAll(ctx context.Context) ([]*domain.Account, erro
 	var accounts []*domain.Account
 	for rows.Next() {
 		a := &domain.Account{}
-		if err := rows.Scan(&a.ID, &a.Name, &a.Slug, &a.Plan, &a.MaxDevices, &a.StorageLimitBytes, &a.IsActive, &a.MCPEnabled, &a.KommoEnabled, &a.CreatedAt, &a.UpdatedAt,
+		if err := rows.Scan(&a.ID, &a.Name, &a.Slug, &a.Plan, &a.MaxDevices, &a.StorageLimitBytes, &a.IsActive, &a.CreatedAt, &a.UpdatedAt,
 			&a.SubscriptionStatus, &a.TrialEndsAt, &a.CurrentPeriodEnd, &a.GraceEndsAt,
 			&a.UserCount, &a.DeviceCount, &a.ChatCount); err != nil {
 			return nil, err
@@ -502,7 +489,7 @@ func (r *AccountRepository) GetAll(ctx context.Context) ([]*domain.Account, erro
 func (r *AccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Account, error) {
 	a := &domain.Account{}
 	err := r.db.QueryRow(ctx, `
-		SELECT a.id, a.name, COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices, COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true), COALESCE(a.mcp_enabled, false), COALESCE(a.kommo_enabled, false), a.default_incoming_stage_id, a.created_at, a.updated_at,
+		SELECT a.id, a.name, COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices, COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true), a.default_incoming_stage_id, a.created_at, a.updated_at,
 			COALESCE(s.status, 'active'), s.trial_ends_at, s.current_period_end, s.grace_ends_at,
 			(SELECT COUNT(*) FROM user_accounts WHERE account_id = a.id) as user_count,
 			(SELECT COUNT(*) FROM devices WHERE account_id = a.id) as device_count,
@@ -511,7 +498,7 @@ func (r *AccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.
 		FROM accounts a
 		LEFT JOIN subscriptions s ON s.account_id = a.id
 		WHERE a.id = $1
-	`, id).Scan(&a.ID, &a.Name, &a.Slug, &a.Plan, &a.MaxDevices, &a.StorageLimitBytes, &a.IsActive, &a.MCPEnabled, &a.KommoEnabled, &a.DefaultIncomingStageID, &a.CreatedAt, &a.UpdatedAt,
+	`, id).Scan(&a.ID, &a.Name, &a.Slug, &a.Plan, &a.MaxDevices, &a.StorageLimitBytes, &a.IsActive, &a.DefaultIncomingStageID, &a.CreatedAt, &a.UpdatedAt,
 		&a.SubscriptionStatus, &a.TrialEndsAt, &a.CurrentPeriodEnd, &a.GraceEndsAt,
 		&a.UserCount, &a.DeviceCount, &a.ChatCount,
 		&a.GoogleEmail, &a.GoogleContactGroupID, &a.GoogleConnectedAt, &a.GoogleSyncLimit)
@@ -531,9 +518,9 @@ func (r *AccountRepository) Create(ctx context.Context, a *domain.Account) error
 
 func (r *AccountRepository) Update(ctx context.Context, a *domain.Account) error {
 	_, err := r.db.Exec(ctx, `
-		UPDATE accounts SET name = $2, slug = $3, plan = $4, max_devices = $5, storage_limit_bytes = $6, mcp_enabled = $7, kommo_enabled = $8, updated_at = NOW()
+		UPDATE accounts SET name = $2, slug = $3, plan = $4, max_devices = $5, storage_limit_bytes = $6, updated_at = NOW()
 		WHERE id = $1
-	`, a.ID, a.Name, a.Slug, a.Plan, a.MaxDevices, a.StorageLimitBytes, a.MCPEnabled, a.KommoEnabled)
+	`, a.ID, a.Name, a.Slug, a.Plan, a.MaxDevices, a.StorageLimitBytes)
 	return err
 }
 
@@ -1888,8 +1875,8 @@ func (r *LeadRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID
 		       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 		       l.status, l.source, COALESCE(c.notes, l.notes),
 		       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id, l.created_at, l.updated_at,
-		       ps.name, ps.color, ps.position, l.kommo_id,
-		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at
+		       ps.name, ps.color, ps.position,
+		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason
 		FROM leads l
 		LEFT JOIN contacts c ON c.id = l.contact_id
 		LEFT JOIN pipeline_stages ps ON ps.id = l.stage_id
@@ -1907,8 +1894,8 @@ func (r *LeadRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID
 			&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName, &lead.Phone,
 			&lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes, &lead.Tags,
 			&lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID, &lead.CreatedAt, &lead.UpdatedAt,
-			&lead.StageName, &lead.StageColor, &lead.StagePosition, &lead.KommoID,
-			&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+			&lead.StageName, &lead.StageColor, &lead.StagePosition,
+			&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 		); err != nil {
 			return nil, err
 		}
@@ -1927,8 +1914,8 @@ func (r *LeadRepository) GetByJID(ctx context.Context, accountID uuid.UUID, jid 
 		       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 		       l.status, l.source, COALESCE(c.notes, l.notes),
 		       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id, l.created_at, l.updated_at,
-		       ps.name, ps.color, ps.position, l.kommo_id,
-		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at
+		       ps.name, ps.color, ps.position,
+		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason
 		FROM leads l
 		LEFT JOIN contacts c ON c.id = l.contact_id
 		LEFT JOIN pipeline_stages ps ON ps.id = l.stage_id
@@ -1938,8 +1925,8 @@ func (r *LeadRepository) GetByJID(ctx context.Context, accountID uuid.UUID, jid 
 		&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName, &lead.Phone,
 		&lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes, &lead.Tags,
 		&lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID, &lead.CreatedAt, &lead.UpdatedAt,
-		&lead.StageName, &lead.StageColor, &lead.StagePosition, &lead.KommoID,
-		&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+		&lead.StageName, &lead.StageColor, &lead.StagePosition,
+		&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -1962,8 +1949,8 @@ func (r *LeadRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Lea
 		       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 		       l.status, l.source, COALESCE(c.notes, l.notes),
 		       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id, l.created_at, l.updated_at,
-		       ps.name, ps.color, ps.position, l.kommo_id,
-		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at
+		       ps.name, ps.color, ps.position,
+		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason
 		FROM leads l
 		LEFT JOIN contacts c ON c.id = l.contact_id
 		LEFT JOIN pipeline_stages ps ON ps.id = l.stage_id
@@ -1972,8 +1959,8 @@ func (r *LeadRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Lea
 		&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName, &lead.Phone,
 		&lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes, &lead.Tags,
 		&lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID, &lead.CreatedAt, &lead.UpdatedAt,
-		&lead.StageName, &lead.StageColor, &lead.StagePosition, &lead.KommoID,
-		&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+		&lead.StageName, &lead.StageColor, &lead.StagePosition,
+		&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -2055,8 +2042,8 @@ func (r *LeadRepository) GetByContactID(ctx context.Context, contactID uuid.UUID
 		       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 		       l.status, l.source, COALESCE(c.notes, l.notes),
 		       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id, l.created_at, l.updated_at,
-		       ps.name, ps.color, ps.position, l.kommo_id,
-		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at
+		       ps.name, ps.color, ps.position,
+		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason
 		FROM leads l
 		LEFT JOIN contacts c ON c.id = l.contact_id
 		LEFT JOIN pipeline_stages ps ON ps.id = l.stage_id
@@ -2065,8 +2052,8 @@ func (r *LeadRepository) GetByContactID(ctx context.Context, contactID uuid.UUID
 		&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName, &lead.Phone,
 		&lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes, &lead.Tags,
 		&lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID, &lead.CreatedAt, &lead.UpdatedAt,
-		&lead.StageName, &lead.StageColor, &lead.StagePosition, &lead.KommoID,
-		&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+		&lead.StageName, &lead.StageColor, &lead.StagePosition,
+		&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -2158,7 +2145,7 @@ type PipelineRepository struct {
 
 func (r *PipelineRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID) ([]*domain.Pipeline, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT p.id, p.account_id, p.name, p.description, p.is_default, p.kommo_id, p.created_at, p.updated_at
+		SELECT p.id, p.account_id, p.name, p.description, p.is_default, p.created_at, p.updated_at
 		FROM pipelines p WHERE p.account_id = $1 ORDER BY p.created_at
 	`, accountID)
 	if err != nil {
@@ -2171,7 +2158,7 @@ func (r *PipelineRepository) GetByAccountID(ctx context.Context, accountID uuid.
 		pipeline := &domain.Pipeline{}
 		if err := rows.Scan(
 			&pipeline.ID, &pipeline.AccountID, &pipeline.Name, &pipeline.Description,
-			&pipeline.IsDefault, &pipeline.KommoID, &pipeline.CreatedAt, &pipeline.UpdatedAt,
+			&pipeline.IsDefault, &pipeline.CreatedAt, &pipeline.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2354,18 +2341,8 @@ func (r *PipelineRepository) GetDefaultPipeline(ctx context.Context, accountID u
 	return pipeline, nil
 }
 
-// GetActivePipeline returns the pipeline connected to Kommo (enabled=TRUE), falling back to is_default, then any pipeline.
+// GetActivePipeline returns the default pipeline for the account.
 func (r *PipelineRepository) GetActivePipeline(ctx context.Context, accountID uuid.UUID) (*domain.Pipeline, error) {
-	// 1. Try the Kommo-connected pipeline
-	var pipelineID uuid.UUID
-	err := r.db.QueryRow(ctx, `
-		SELECT pipeline_id FROM kommo_connected_pipelines
-		WHERE account_id = $1 AND enabled = TRUE AND pipeline_id IS NOT NULL LIMIT 1
-	`, accountID).Scan(&pipelineID)
-	if err == nil {
-		return r.GetByID(ctx, pipelineID)
-	}
-	// 2. Fallback to default pipeline
 	return r.GetDefaultPipeline(ctx, accountID)
 }
 
@@ -2904,14 +2881,28 @@ func (r *CampaignRepository) GetRecipientByID(ctx context.Context, recipientID u
 }
 
 func (r *CampaignRepository) GetNextPendingRecipient(ctx context.Context, campaignID uuid.UUID) (*domain.CampaignRecipient, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	rec := &domain.CampaignRecipient{}
 	var metaJSON []byte
-	err := r.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT id, campaign_id, contact_id, jid, name, phone, status, sent_at, error_message, wait_time_ms, COALESCE(metadata, '{}')
-		FROM campaign_recipients WHERE campaign_id = $1 AND status = 'pending'
+		FROM campaign_recipients
+		WHERE campaign_id = $1 AND status = 'pending'
 		ORDER BY id LIMIT 1
+		FOR UPDATE SKIP LOCKED
 	`, campaignID).Scan(&rec.ID, &rec.CampaignID, &rec.ContactID, &rec.JID, &rec.Name, &rec.Phone, &rec.Status, &rec.SentAt, &rec.ErrorMessage, &rec.WaitTimeMs, &metaJSON)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE campaign_recipients SET status = 'processing' WHERE id = $1`, rec.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	if len(metaJSON) > 2 {
@@ -3286,7 +3277,7 @@ type EventTagEntry struct {
 // GetEventTags returns the tags configured on an event with their negate flags.
 func (r *EventRepository) GetEventTags(ctx context.Context, eventID uuid.UUID) ([]*domain.Tag, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT t.id, t.account_id, t.name, t.color, t.kommo_id, t.created_at, t.updated_at, et.negate
+		SELECT t.id, t.account_id, t.name, t.color, t.created_at, t.updated_at, et.negate
 		FROM tags t JOIN event_tags et ON et.tag_id = t.id
 		WHERE et.event_id = $1
 		ORDER BY et.negate ASC, t.name
@@ -3299,7 +3290,7 @@ func (r *EventRepository) GetEventTags(ctx context.Context, eventID uuid.UUID) (
 	for rows.Next() {
 		t := &domain.Tag{}
 		var negate bool
-		if err := rows.Scan(&t.ID, &t.AccountID, &t.Name, &t.Color, &t.KommoID, &t.CreatedAt, &t.UpdatedAt, &negate); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.Name, &t.Color, &t.CreatedAt, &t.UpdatedAt, &negate); err != nil {
 			return nil, err
 		}
 		if negate {
@@ -3317,7 +3308,7 @@ func (r *EventRepository) GetEventTagsBatch(ctx context.Context, eventIDs []uuid
 		return result, nil
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT et.event_id, t.id, t.account_id, t.name, t.color, t.kommo_id, t.created_at, t.updated_at, et.negate
+		SELECT et.event_id, t.id, t.account_id, t.name, t.color, t.created_at, t.updated_at, et.negate
 		FROM tags t JOIN event_tags et ON et.tag_id = t.id
 		WHERE et.event_id = ANY($1)
 		ORDER BY et.event_id, et.negate ASC, t.name
@@ -3330,7 +3321,7 @@ func (r *EventRepository) GetEventTagsBatch(ctx context.Context, eventIDs []uuid
 		var eid uuid.UUID
 		t := &domain.Tag{}
 		var negate bool
-		if err := rows.Scan(&eid, &t.ID, &t.AccountID, &t.Name, &t.Color, &t.KommoID, &t.CreatedAt, &t.UpdatedAt, &negate); err != nil {
+		if err := rows.Scan(&eid, &t.ID, &t.AccountID, &t.Name, &t.Color, &t.CreatedAt, &t.UpdatedAt, &negate); err != nil {
 			return nil, err
 		}
 		if negate {
@@ -4413,7 +4404,7 @@ func (r *InteractionRepository) Delete(ctx context.Context, id uuid.UUID) error 
 func (r *InteractionRepository) GetCallsByLeadID(ctx context.Context, leadID uuid.UUID) ([]*domain.Interaction, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, account_id, contact_id, lead_id, event_id, participant_id, type, direction, outcome, notes,
-		       next_action, next_action_date, created_by, created_at, kommo_call_slot
+		       next_action, next_action_date, created_by, created_at
 		FROM interactions
 		WHERE lead_id = $1 AND type = 'call'
 		ORDER BY created_at ASC
@@ -4428,7 +4419,7 @@ func (r *InteractionRepository) GetCallsByLeadID(ctx context.Context, leadID uui
 		it := &domain.Interaction{}
 		if err := rows.Scan(&it.ID, &it.AccountID, &it.ContactID, &it.LeadID, &it.EventID, &it.ParticipantID,
 			&it.Type, &it.Direction, &it.Outcome, &it.Notes, &it.NextAction, &it.NextActionDate,
-			&it.CreatedBy, &it.CreatedAt, &it.KommoCallSlot); err != nil {
+			&it.CreatedBy, &it.CreatedAt); err != nil {
 			return nil, err
 		}
 		interactions = append(interactions, it)

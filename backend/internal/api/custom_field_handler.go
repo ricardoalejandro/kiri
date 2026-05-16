@@ -12,7 +12,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/naperu/kiri/internal/domain"
-	"github.com/naperu/kiri/internal/kommo"
+	"github.com/naperu/kiri/internal/phone"
 	"github.com/naperu/kiri/internal/service"
 	"github.com/naperu/kiri/internal/ws"
 )
@@ -580,7 +580,7 @@ func (s *Server) mapValueToColumns(def *domain.CustomFieldDefinition, value inte
 		}
 		str = strings.TrimSpace(str)
 		if str != "" {
-			str = kommo.NormalizePhone(str)
+			str = phone.Normalize(str)
 		}
 		val.ValueText = &str
 

@@ -18,8 +18,8 @@ import ContactSelector, { SelectedPerson } from '@/components/ContactSelector'
 import LeadDetailPanel from '@/components/LeadDetailPanel'
 import type { Lead, Contact as FullContact } from '@/types/contact'
 import { renderFormattedText } from '@/lib/whatsappFormat'
-import * as XLSX from 'xlsx'
 import { api } from '@/lib/api'
+import { downloadCsv, parseCsv } from '@/utils/csv'
 
 interface Device {
   id: string
@@ -108,7 +108,6 @@ const contactToLead = (c: FullContact): Lead => ({
   notes: c.notes ?? '',
   tags: c.tags || [],
   structured_tags: c.structured_tags || null,
-  kommo_id: c.kommo_id ?? null,
   is_archived: false,
   archived_at: null,
   is_blocked: false,
@@ -577,25 +576,24 @@ export default function BroadcastsPage() {
   }
 
   const downloadExcelTemplate = () => {
-    const ws = XLSX.utils.aoa_to_sheet([
+    downloadCsv([
       ['telefono', 'nombre', 'empresa', 'ciudad'],
       ['51999888777', 'Juan Pérez', 'Mi Empresa', 'Lima'],
       ['51998877666', 'María García', 'Otra Empresa', 'Cusco'],
-    ])
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Destinatarios')
-    XLSX.writeFile(wb, 'plantilla_destinatarios.xlsx')
+    ], 'plantilla_destinatarios.csv')
   }
 
   const handleExcelFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      alert('Por seguridad, importa destinatarios en formato CSV.')
+      e.target.value = ''
+      return
+    }
     const reader = new FileReader()
     reader.onload = (ev) => {
-      const data = new Uint8Array(ev.target?.result as ArrayBuffer)
-      const workbook = XLSX.read(data, { type: 'array' })
-      const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
-      const jsonData = XLSX.utils.sheet_to_json<Record<string, string>>(firstSheet, { defval: '' })
+      const jsonData = parseCsv(String(ev.target?.result || ''))
       if (jsonData.length === 0) return
       const headers = Object.keys(jsonData[0])
       setCsvHeaders(headers)
@@ -611,7 +609,7 @@ export default function BroadcastsPage() {
       })
       setCsvData(rows)
     }
-    reader.readAsArrayBuffer(file)
+    reader.readAsText(file)
   }
 
   const handleStartCampaign = async (id: string) => {
@@ -700,10 +698,7 @@ export default function BroadcastsPage() {
       'Tiempo espera (s)': rec.wait_time_ms != null ? (rec.wait_time_ms / 1000).toFixed(1) : '',
       'Error': rec.error_message || '',
     }))
-    const ws = XLSX.utils.json_to_sheet(rows)
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Destinatarios')
-    XLSX.writeFile(wb, `${selectedCampaign.name.replace(/[^a-zA-Z0-9]/g, '_')}_destinatarios.xlsx`)
+    downloadCsv(rows, `${selectedCampaign.name.replace(/[^a-zA-Z0-9]/g, '_')}_destinatarios.csv`)
   }
 
   const handleRetryRecipient = async (recipientId: string) => {
@@ -1393,12 +1388,12 @@ export default function BroadcastsPage() {
                 {csvData.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg p-8">
                     <Upload className="w-8 h-8 text-gray-400 mb-3" />
-                    <p className="text-sm text-gray-600 mb-2">Selecciona un archivo Excel (.xlsx)</p>
+                    <p className="text-sm text-gray-600 mb-2">Selecciona un archivo CSV (.csv)</p>
                     <p className="text-xs text-gray-400 mb-4">Columnas sugeridas: telefono, nombre, empresa, ciudad...</p>
                     <div className="flex items-center gap-3">
                       <label className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm cursor-pointer hover:bg-blue-700">
                         Seleccionar archivo
-                        <input type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelFileUpload} className="hidden" />
+                        <input type="file" accept=".csv,text/csv" onChange={handleExcelFileUpload} className="hidden" />
                       </label>
                       <button
                         onClick={downloadExcelTemplate}

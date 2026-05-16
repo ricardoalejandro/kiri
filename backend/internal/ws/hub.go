@@ -22,36 +22,34 @@ const (
 
 	// Maximum WebSocket connections allowed per account
 	// Prevents memory/goroutine exhaustion from too many open tabs
-	maxConnectionsPerAccount = 20
+	maxConnectionsPerAccount = 100
 )
 
 // Event types for WebSocket communication
 const (
-	EventNewMessage       = "new_message"
-	EventMessageSent      = "message_sent"
-	EventMessageStatus    = "message_status"
-	EventDeviceStatus     = "device_status"
-	EventQRCode           = "qr_code"
-	EventChatUpdate       = "chat_update"
-	EventPresence         = "presence"
-	EventTyping           = "typing"
-	EventLeadUpdate          = "lead_update"
-	EventNotification        = "notification"
-	EventMessageReaction     = "message_reaction"
-	EventPollUpdate          = "poll_update"
-	EventInteractionUpdate       = "interaction_update"
-	EventMessageRevoked          = "message_revoked"
-	EventMessageEdited           = "message_edited"
-	EventEventParticipantUpdate  = "event_participant_update"
-	EventHistorySyncComplete     = "history_sync_complete"
-	EventLogbookUpdate           = "logbook_update"
-	EventDynamicRegistration     = "dynamic_registration"
-	EventContactUpdate           = "contact_update"
-	EventVersionUpdate           = "version_update"
-	EventTaskUpdate              = "task_update"
-	EventTaskReminder            = "task_reminder"
-	EventTaskOverdue             = "task_overdue"
-	EventCustomFieldDefUpdate    = "custom_field_def_update"
+	EventNewMessage             = "new_message"
+	EventMessageSent            = "message_sent"
+	EventMessageStatus          = "message_status"
+	EventDeviceStatus           = "device_status"
+	EventQRCode                 = "qr_code"
+	EventChatUpdate             = "chat_update"
+	EventPresence               = "presence"
+	EventTyping                 = "typing"
+	EventLeadUpdate             = "lead_update"
+	EventNotification           = "notification"
+	EventMessageReaction        = "message_reaction"
+	EventPollUpdate             = "poll_update"
+	EventInteractionUpdate      = "interaction_update"
+	EventMessageRevoked         = "message_revoked"
+	EventMessageEdited          = "message_edited"
+	EventEventParticipantUpdate = "event_participant_update"
+	EventHistorySyncComplete    = "history_sync_complete"
+	EventContactUpdate          = "contact_update"
+	EventVersionUpdate          = "version_update"
+	EventTaskUpdate             = "task_update"
+	EventTaskReminder           = "task_reminder"
+	EventTaskOverdue            = "task_overdue"
+	EventCustomFieldDefUpdate   = "custom_field_def_update"
 )
 
 // Message represents a WebSocket message
@@ -98,7 +96,7 @@ func NewHub() *Hub {
 	return &Hub{
 		clients:        make(map[*Client]bool),
 		accountClients: make(map[uuid.UUID]map[*Client]bool),
-		broadcast:      make(chan *Message, 256),
+		broadcast:      make(chan *Message, 4096),
 		register:       make(chan *Client),
 		unregister:     make(chan *Client),
 	}
@@ -205,24 +203,28 @@ func (h *Hub) Unregister(client *Client) {
 
 // Broadcast sends a message to all clients or specific account clients
 func (h *Hub) Broadcast(msg *Message) {
-	h.broadcast <- msg
+	select {
+	case h.broadcast <- msg:
+	default:
+		log.Printf("[WS Hub] Dropped broadcast %q: hub queue full", msg.Event)
+	}
 }
 
 // BroadcastToAccount sends a message to all clients of a specific account
 func (h *Hub) BroadcastToAccount(accountID uuid.UUID, event string, data interface{}) {
-	h.broadcast <- &Message{
+	h.Broadcast(&Message{
 		Event:     event,
 		AccountID: accountID.String(),
 		Data:      data,
-	}
+	})
 }
 
 // BroadcastToAll sends a message to all connected clients across all accounts
 func (h *Hub) BroadcastToAll(event string, data interface{}) {
-	h.broadcast <- &Message{
+	h.Broadcast(&Message{
 		Event: event,
 		Data:  data,
-	}
+	})
 }
 
 // BroadcastDeviceStatus sends device status update to account clients

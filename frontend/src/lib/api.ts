@@ -1,6 +1,7 @@
 // API helper for Kiri frontend
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
+const SESSION_MARKER = 'cookie-session'
 
 // ─── Token Refresh ────────────────────────────────────────────────────────────
 // Transparently refreshes the JWT when it expires (401), using the httpOnly
@@ -11,7 +12,11 @@ let _refreshPromise: Promise<boolean> | null = null
 export function clearAuthState() {
   if (typeof window === 'undefined') return
   localStorage.removeItem('token')
-  localStorage.removeItem('kommo_enabled')
+}
+
+export function markAuthSession() {
+  if (typeof window === 'undefined') return
+  localStorage.setItem('token', SESSION_MARKER)
 }
 
 export async function tryRefreshToken(): Promise<boolean> {
@@ -29,8 +34,8 @@ export async function tryRefreshToken(): Promise<boolean> {
         return false
       }
       const data = await res.json()
-      if (data.success && data.token) {
-        localStorage.setItem('token', data.token)
+      if (data.success) {
+        markAuthSession()
         return true
       }
       clearAuthState()
@@ -117,18 +122,11 @@ export async function api<T>(
     ...fetchOptions.headers,
   }
 
-  // Add auth token if available and not skipped
-  if (!skipAuth && typeof window !== 'undefined') {
-    const token = localStorage.getItem('token')
-    if (token) {
-      (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`
-    }
-  }
-
   try {
     const res = await fetch(`${API_BASE}${endpoint}`, {
       ...fetchOptions,
       headers,
+      credentials: fetchOptions.credentials ?? 'include',
     })
 
     // Check for server version changes
@@ -153,14 +151,10 @@ export async function api<T>(
       if (res.status === 401 && typeof window !== 'undefined' && !skipAuth) {
         const refreshed = await tryRefreshToken()
         if (refreshed) {
-          // Retry the original request with the new token
-          const newToken = localStorage.getItem('token')
-          if (newToken) {
-            (headers as Record<string, string>)['Authorization'] = `Bearer ${newToken}`
-          }
           const retryRes = await fetch(`${API_BASE}${endpoint}`, {
             ...fetchOptions,
             headers,
+            credentials: fetchOptions.credentials ?? 'include',
           })
           if (retryRes.ok) {
             const retryData = await retryRes.json().catch(() => undefined)
@@ -201,22 +195,20 @@ export const apiDelete = <T>(endpoint: string) =>
   api<T>(endpoint, { method: 'DELETE' })
 
 export async function apiUpload<T = any>(endpoint: string, formData: FormData): Promise<{ success: boolean; data?: T; error?: string }> {
-  const getToken = () => typeof window !== 'undefined' ? localStorage.getItem('token') : null
-
-  const doFetch = async (token: string | null) => {
+  const doFetch = async () => {
     return fetch(`${API_BASE}${endpoint}`, {
       method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
+      credentials: 'include',
     })
   }
 
   try {
-    let res = await doFetch(getToken())
+    let res = await doFetch()
     if (res.status === 401 && typeof window !== 'undefined') {
       const refreshed = await tryRefreshToken()
       if (refreshed) {
-        res = await doFetch(getToken())
+        res = await doFetch()
       } else {
         clearAuthState()
         window.location.href = '/login'
@@ -239,11 +231,8 @@ export function createWebSocket(
 ) {
   if (typeof window === 'undefined') return null
 
-  const token = localStorage.getItem('token')
-  if (!token) return null
-
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${protocol}//${window.location.host}/ws?token=${token}`
+  const wsUrl = `${protocol}//${window.location.host}/ws`
 
   let ws: WebSocket | null = null
   let reconnectAttempts = 0
@@ -329,16 +318,13 @@ function _sharedSend(data: string) {
 function _sharedConnect() {
   if (typeof window === 'undefined') return
 
-  const token = localStorage.getItem('token')
-  if (!token) return
-
   // Don't create a new connection if one is already open/connecting
   if (_sharedWS && (_sharedWS.readyState === WebSocket.OPEN || _sharedWS.readyState === WebSocket.CONNECTING)) {
     return
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${protocol}//${window.location.host}/ws?token=${token}`
+  const wsUrl = `${protocol}//${window.location.host}/ws`
 
   _sharedWS = new WebSocket(wsUrl)
 

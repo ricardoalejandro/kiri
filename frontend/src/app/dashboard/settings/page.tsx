@@ -110,237 +110,6 @@ interface UserProfile {
   permissions?: string[]
 }
 
-// ─── API Keys / MCP Panel ───────────────────────────────────────────────────
-function APIKeysPanel() {
-  const [apiKeys, setApiKeys] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
-  const [newKeyName, setNewKeyName] = useState('')
-  const [revealedKey, setRevealedKey] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
-  const [deleting, setDeleting] = useState<string | null>(null)
-
-  const fetchKeys = useCallback(async () => {
-    try {
-      const res = await fetch('/api/settings/api-keys')
-      const data = await res.json()
-      if (data.success) setApiKeys(data.api_keys || [])
-    } catch (e) {}
-    setLoading(false)
-  }, [])
-
-  useEffect(() => { fetchKeys() }, [fetchKeys])
-
-  const handleCreate = async () => {
-    if (!newKeyName.trim()) return
-    setCreating(true)
-    try {
-      const res = await fetch('/api/settings/api-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newKeyName.trim() }),
-      })
-      const data = await res.json()
-      if (data.success) {
-        setRevealedKey(data.key)
-        setNewKeyName('')
-        fetchKeys()
-      }
-    } catch (e) {}
-    setCreating(false)
-  }
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('¿Revocar esta API Key? Los servicios que la usen dejarán de funcionar.')) return
-    setDeleting(id)
-    try {
-      await fetch(`/api/settings/api-keys/${id}`, { method: 'DELETE' })
-      fetchKeys()
-    } catch (e) {}
-    setDeleting(null)
-  }
-
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* MCP Info Banner */}
-      <div className="bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-xl p-4">
-        <div className="flex items-start gap-3">
-          <div className="w-8 h-8 bg-emerald-100 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
-            <Key className="w-4 h-4 text-emerald-600" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-emerald-900">API Keys — MCP (Model Context Protocol)</h3>
-            <p className="text-xs text-emerald-700 mt-1 leading-relaxed">
-              Conecta tu CRM con ChatGPT, Claude, VS Code Copilot u otros asistentes de IA usando el protocolo MCP.
-              Las API Keys permiten acceso de <span className="font-semibold">solo lectura</span> a tus datos (leads, eventos, contactos, bitácoras, conversaciones).
-            </p>
-            <div className="mt-3 flex items-center gap-2">
-              <span className="text-[10px] font-mono bg-white/70 text-emerald-800 px-2 py-1 rounded border border-emerald-200">
-                https://kiri.naperu.cloud/mcp/sse
-              </span>
-              <button
-                onClick={() => handleCopy('https://kiri.naperu.cloud/mcp/sse')}
-                className="p-1 text-emerald-600 hover:text-emerald-800 transition"
-                title="Copiar URL"
-              >
-                <Copy className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Revealed Key Modal */}
-      {revealedKey && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Eye className="w-4 h-4 text-amber-600" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h4 className="text-sm font-semibold text-amber-900">¡API Key creada!</h4>
-              <p className="text-xs text-amber-700 mt-0.5">Copia esta clave ahora. No podrás verla de nuevo.</p>
-              <div className="mt-2 flex items-center gap-2">
-                <code className="text-xs font-mono bg-white text-amber-900 px-3 py-1.5 rounded border border-amber-200 break-all flex-1">
-                  {revealedKey}
-                </code>
-                <button
-                  onClick={() => handleCopy(revealedKey)}
-                  className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                    copied ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-200 text-amber-800 hover:bg-amber-300'
-                  }`}
-                >
-                  {copied ? <><CheckCircle2 className="w-3.5 h-3.5" /> Copiado</> : <><Copy className="w-3.5 h-3.5" /> Copiar</>}
-                </button>
-              </div>
-              <button onClick={() => setRevealedKey(null)} className="mt-2 text-xs text-amber-600 hover:text-amber-800 underline">
-                Cerrar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Create New Key */}
-      <div>
-        <h3 className="text-sm font-medium text-slate-900 mb-3">Crear nueva API Key</h3>
-        <div className="flex items-center gap-2 max-w-md">
-          <input
-            value={newKeyName}
-            onChange={e => setNewKeyName(e.target.value)}
-            placeholder="Nombre (ej: ChatGPT MCP)"
-            className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-slate-900 placeholder:text-slate-400"
-            onKeyDown={e => e.key === 'Enter' && handleCreate()}
-          />
-          <button
-            onClick={handleCreate}
-            disabled={creating || !newKeyName.trim()}
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 transition shadow-sm"
-          >
-            {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-            Crear
-          </button>
-        </div>
-      </div>
-
-      {/* Keys List */}
-      <div>
-        <h3 className="text-sm font-medium text-slate-900 mb-3">API Keys activas</h3>
-        {loading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
-          </div>
-        ) : apiKeys.length === 0 ? (
-          <div className="text-center py-8 text-slate-400">
-            <Key className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            <p className="text-sm">No hay API Keys creadas</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {apiKeys.map((key: any) => (
-              <div key={key.id} className="flex items-center justify-between px-4 py-3 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className={`w-2 h-2 rounded-full ${key.is_active ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-900 truncate">{key.name || 'API Key'}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <code className="text-[11px] font-mono text-slate-400">{key.key_prefix}</code>
-                      <span className="text-[10px] text-slate-400">·</span>
-                      <span className="text-[10px] text-slate-400">
-                        {key.last_used_at ? `Último uso: ${new Date(key.last_used_at).toLocaleDateString('es-PE')}` : 'Nunca usada'}
-                      </span>
-                      <span className="text-[10px] text-slate-400">·</span>
-                      <span className="text-[10px] text-slate-400">
-                        Creada: {new Date(key.created_at).toLocaleDateString('es-PE')}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onClick={() => handleDelete(key.id)}
-                  disabled={deleting === key.id}
-                  className="p-1.5 text-slate-400 hover:text-red-500 transition rounded-lg hover:bg-red-50"
-                  title="Revocar"
-                >
-                  {deleting === key.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Connection Instructions */}
-      <div className="border-t border-slate-200 pt-6">
-        <h3 className="text-sm font-medium text-slate-900 mb-3">Cómo conectar con ChatGPT</h3>
-        <div className="space-y-4 text-xs text-slate-600 leading-relaxed">
-          <div className="flex items-start gap-3 bg-slate-50 rounded-xl p-3">
-            <span className="w-5 h-5 bg-slate-200 text-slate-600 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5">1</span>
-            <div>
-              <p className="font-medium text-slate-800">Abre ChatGPT → Aplicaciones → Nueva aplicación</p>
-              <p className="text-slate-500 mt-0.5">Crea una nueva aplicación MCP con los siguientes datos:</p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3 bg-slate-50 rounded-xl p-3">
-            <span className="w-5 h-5 bg-slate-200 text-slate-600 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5">2</span>
-            <div>
-              <p className="font-medium text-slate-800">Configura la conexión</p>
-              <div className="text-slate-500 mt-1 space-y-1">
-                <p>• <strong>Nombre:</strong> Kiri</p>
-                <p>• <strong>URL del servidor MCP:</strong> <code className="bg-white px-1 py-0.5 rounded border border-slate-200">https://kiri.naperu.cloud/mcp/sse</code></p>
-                <p>• <strong>Autenticación:</strong> OAuth</p>
-                <p>• <strong>URL de autorización:</strong> <code className="bg-white px-1 py-0.5 rounded border border-slate-200">https://kiri.naperu.cloud/mcp/authorize</code></p>
-                <p>• <strong>URL del token:</strong> <code className="bg-white px-1 py-0.5 rounded border border-slate-200">https://kiri.naperu.cloud/mcp/token</code></p>
-                <p>• <strong>Client ID / Secret:</strong> Dejar vacío (opcional)</p>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-start gap-3 bg-slate-50 rounded-xl p-3">
-            <span className="w-5 h-5 bg-slate-200 text-slate-600 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5">3</span>
-            <div>
-              <p className="font-medium text-slate-800">Inicia sesión y pregunta lo que quieras</p>
-              <p className="text-slate-500 mt-0.5">Se abrirá una ventana para iniciar sesión en Kiri. Luego podrás preguntar: &quot;¿Cuántos eventos activos tengo?&quot;, &quot;Dame el resumen de la bitácora del 7 de marzo&quot;, &quot;¿Qué dice la conversación con Lucero?&quot;</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Also available: manual API Key */}
-        <div className="mt-4 bg-slate-50 rounded-xl p-3">
-          <p className="text-[11px] text-slate-500">
-            <strong>Conexión manual:</strong> También puedes usar una API Key (creada arriba) como Bearer token directamente. Útil para VS Code Copilot, Claude u otros clientes MCP que soporten Bearer auth.
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ─── Field Type Config ──────────────────────────────────────────────────────
 const FIELD_TYPE_OPTIONS: { value: CustomFieldType; label: string; icon: React.ElementType; description: string }[] = [
   { value: 'text', label: 'Texto', icon: Type, description: 'Texto libre' },
@@ -1949,11 +1718,10 @@ export default function SettingsPage() {
     { id: 'account', label: 'Cuenta', icon: Building },
     ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('integrations') || user?.permissions?.includes('*')) ? [{ id: 'integrations', label: 'Integraciones', icon: Link2 }] : []),
     ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('devices') || user?.permissions?.includes('*')) ? [{ id: 'devices', label: 'Dispositivos', icon: Smartphone }] : []),
-    ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('integrations') || user?.permissions?.includes('*')) ? [{ id: 'whatsapp-api', label: 'WhatsApp API', icon: Globe }] : []),
+    ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('whatsapp_api') || user?.permissions?.includes('*')) ? [{ id: 'whatsapp-api', label: 'WhatsApp API', icon: Globe }] : []),
     { id: 'quick-replies', label: 'Resp. Rápidas', icon: Zap },
     ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('settings') || user?.permissions?.includes('*')) ? [{ id: 'custom-fields', label: 'Campos', icon: Tag }] : []),
     { id: 'notifications', label: 'Notificaciones', icon: Bell },
-    ...((user?.is_super_admin || user?.is_admin) ? [{ id: 'api-keys', label: 'API / MCP', icon: Key }] : []),
     { id: 'security', label: 'Seguridad', icon: Shield },
   ]
 
@@ -2162,7 +1930,7 @@ export default function SettingsPage() {
                   </button>
                 </div>
                 <p className="text-xs text-slate-500 mb-4">
-                  Administra los pipelines y etapas para organizar tus leads. Puedes crear pipelines manualmente sin necesidad de sincronizar con Kommo.
+                  Administra los pipelines y etapas para organizar tus leads y mantener el control comercial en Kiri.
                 </p>
 
                 {/* New Pipeline Form */}
@@ -3376,11 +3144,6 @@ export default function SettingsPage() {
                 Guardar Preferencias
               </button>
             </div>
-          )}
-
-          {/* API Keys / MCP Tab */}
-          {activeTab === 'api-keys' && (
-            <APIKeysPanel />
           )}
 
           {/* Custom Fields Tab */}

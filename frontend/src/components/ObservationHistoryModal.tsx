@@ -48,9 +48,7 @@ export default function ObservationHistoryModal({
   name,
   observations: initialObservations,
   onObservationChange,
-}: ObservationHistoryModalProps) {
-  const kommoEnabled = typeof window !== 'undefined' && localStorage.getItem('kommo_enabled') === 'true'
-  const [observations, setObservations] = useState<HistoryObservation[]>(initialObservations)
+}: ObservationHistoryModalProps) {  const [observations, setObservations] = useState<HistoryObservation[]>(initialObservations)
   const [filterType, setFilterType] = useState('')
   const [filterFrom, setFilterFrom] = useState('')
   const [filterTo, setFilterTo] = useState('')
@@ -344,7 +342,6 @@ export default function ObservationHistoryModal({
                         </span>
                         <span className="text-[11px] text-slate-400">{format(new Date(obs.created_at), "d MMM yyyy, HH:mm", { locale: es })}</span>
                         {obs.created_by_name && <span className="text-[10px] text-slate-400 hidden sm:inline">· {obs.created_by_name}</span>}
-                        {kommoEnabled && obs.notes?.startsWith('(sinc)') && <span className="px-1.5 py-px bg-emerald-50 text-emerald-600 text-[9px] rounded-full font-medium border border-emerald-100">Kommo</span>}
                       </div>
                       <p className="text-sm text-slate-700 whitespace-pre-wrap break-words leading-relaxed">{obs.notes?.startsWith('(sinc) ') ? obs.notes.slice(7) : (obs.notes || '(sin contenido)')}</p>
                     </div>

@@ -10,7 +10,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.2
-	github.com/mark3labs/mcp-go v0.31.0
 	github.com/minio/minio-go/v7 v7.0.82
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e

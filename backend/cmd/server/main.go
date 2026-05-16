@@ -14,8 +14,6 @@ import (
 	"github.com/naperu/kiri/internal/api"
 	"github.com/naperu/kiri/internal/domain"
 	googleclient "github.com/naperu/kiri/internal/google"
-	"github.com/naperu/kiri/internal/kommo"
-	kiriMCP "github.com/naperu/kiri/internal/mcp"
 	"github.com/naperu/kiri/internal/repository"
 	"github.com/naperu/kiri/internal/service"
 	"github.com/naperu/kiri/internal/storage"
@@ -53,16 +51,6 @@ func main() {
 	// Seed admin user
 	if err := database.SeedAdmin(db, cfg); err != nil {
 		log.Printf("Warning: Failed to seed admin: %v", err)
-	}
-
-	// Migrate event pipelines (one-time backfill for existing accounts)
-	if err := database.MigrateEventPipelines(db); err != nil {
-		log.Printf("Warning: Failed to migrate event pipelines: %v", err)
-	}
-
-	// Seed template surveys for all accounts
-	if err := database.SeedTemplateSurveys(db); err != nil {
-		log.Printf("Warning: Failed to seed template surveys: %v", err)
 	}
 
 	// Initialize storage (MinIO)
@@ -134,41 +122,6 @@ func main() {
 	services.Automation.Start()
 	log.Printf("✅ Automation engine started (50 workers, 500/hr rate limit)")
 
-	// Initialize Kommo integrations (optional, multi-instance).
-	// Legacy env vars are migrated into a default integration instance so current
-	// accounts keep working while Admin can add more Kommo licenses.
-	if cfg.KommoSubdomain != "" && cfg.KommoAccessToken != "" {
-		if _, err := repos.Integration.EnsureDefaultKommoInstance(ctx, repository.EnvKommoInstance{
-			Name:          "Kommo " + cfg.KommoSubdomain,
-			Subdomain:     cfg.KommoSubdomain,
-			ClientID:      cfg.KommoClientID,
-			ClientSecret:  cfg.KommoClientSecret,
-			AccessToken:   cfg.KommoAccessToken,
-			RedirectURI:   cfg.KommoRedirectURI,
-			WebhookSecret: cfg.KommoWebhookSecret,
-		}); err != nil {
-			log.Printf("Warning: Failed to migrate Kommo env integration: %v", err)
-		}
-	}
-	kommoManager := kommo.NewManager(db, hub, kommo.ManagerConfig{
-		PublicURL:           cfg.PublicURL,
-		ProxyURL:            cfg.KommoProxyURL,
-		OutboxEnabled:       cfg.KommoOutboxEnabled,
-		OutboxBatchSize:     cfg.KommoOutboxBatchSize,
-		OutboxFlushInterval: cfg.KommoOutboxFlushInterval,
-	})
-	kommoManager.OnLeadTagsChanged = services.Event.ReconcileAllAccountEvents
-	if err := kommoManager.Reload(ctx); err != nil {
-		log.Printf("Warning: Failed to start Kommo manager: %v", err)
-	}
-	kommoSyncSvc := kommoManager.Primary()
-	if kommoSyncSvc != nil {
-		log.Printf("✅ Kommo manager started (%d active instance(s))", kommoManager.RuntimeStatus()["running_instances"])
-		if cfg.KommoOutboxEnabled {
-			log.Printf("✅ Kommo outbox enabled (batch=%d, interval=%s)", cfg.KommoOutboxBatchSize, cfg.KommoOutboxFlushInterval)
-		}
-	}
-
 	// Initialize Google Contacts client (optional)
 	var googleClient *googleclient.Client
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
@@ -177,15 +130,7 @@ func main() {
 	}
 
 	// Initialize API server
-	server := api.NewServer(cfg, services, repos, hub, devicePool, store, kommoSyncSvc, kommoManager, redisCache, googleClient, Version)
-
-	// Initialize and start MCP server (Model Context Protocol) for ChatGPT/Claude/Copilot integration
-	mcpServer := kiriMCP.New(repos, services, cfg.JWTSecret)
-	mcpServer.Start("8081")
-
-	// Start event tag auto-sync worker
-	eventSyncCtx, eventSyncCancel := context.WithCancel(context.Background())
-	server.StartEventTagSyncWorker(eventSyncCtx)
+	server := api.NewServer(cfg, services, repos, hub, devicePool, store, redisCache, googleClient, Version)
 
 	// Start task reminder and overdue workers
 	taskCtx, taskCancel := context.WithCancel(context.Background())
@@ -431,103 +376,6 @@ func main() {
 		}
 	}()
 
-	// Start dynamic WhatsApp queue worker
-	dynamicWACtx, dynamicWACancel := context.WithCancel(context.Background())
-	go func() {
-		for {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						log.Printf("[DynamicWA Worker] ⚠️ PANIC recovered: %v — restarting in 10s", r)
-						select {
-						case <-dynamicWACtx.Done():
-							return
-						case <-time.After(10 * time.Second):
-						}
-					}
-				}()
-
-				log.Println("📱 Dynamic WhatsApp queue worker started")
-				ticker := time.NewTicker(5 * time.Second)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-dynamicWACtx.Done():
-						log.Println("[DynamicWA Worker] Shutting down")
-						return
-					case <-ticker.C:
-						pending, err := repos.Dynamic.GetPendingWhatsApp(dynamicWACtx, 25)
-						if err != nil || len(pending) == 0 {
-							continue
-						}
-						sentInBatch := 0
-						for _, q := range pending {
-							select {
-							case <-dynamicWACtx.Done():
-								return
-							default:
-							}
-							deviceID, err := devicePool.GetFirstConnectedDeviceForAccount(q.AccountID)
-							if err != nil {
-								log.Printf("[DynamicWA] ❌ No device for account %s: %v", q.AccountID, err)
-								_ = repos.Dynamic.UpdateWhatsAppStatus(dynamicWACtx, q.ID, "failed", err.Error())
-								continue
-							}
-							phone := q.Phone + "@s.whatsapp.net"
-							_, sendErr := devicePool.SendMediaMessage(dynamicWACtx, deviceID, phone, q.Caption, q.ImageURL, "image")
-							if sendErr != nil {
-								errMsg := sendErr.Error()
-								log.Printf("[DynamicWA] ❌ Failed to send to %s: %v", q.Phone, sendErr)
-								_ = repos.Dynamic.UpdateWhatsAppStatus(dynamicWACtx, q.ID, "failed", errMsg)
-							} else {
-								log.Printf("[DynamicWA] ✅ Sent image to %s", q.Phone)
-								// Send second message if configured
-								if q.ExtraMediaURL != "" {
-									time.Sleep(2 * time.Second)
-									_, extraErr := devicePool.SendMediaMessage(dynamicWACtx, deviceID, phone, q.ExtraText, q.ExtraMediaURL, q.ExtraMediaType)
-									if extraErr != nil {
-										log.Printf("[DynamicWA] ⚠️ Failed to send extra media to %s: %v", q.Phone, extraErr)
-									} else {
-										log.Printf("[DynamicWA] ✅ Sent extra %s to %s", q.ExtraMediaType, q.Phone)
-									}
-								} else if q.ExtraText != "" {
-									time.Sleep(2 * time.Second)
-									_, extraErr := devicePool.SendMessage(dynamicWACtx, deviceID, phone, q.ExtraText)
-									if extraErr != nil {
-										log.Printf("[DynamicWA] ⚠️ Failed to send extra text to %s: %v", q.Phone, extraErr)
-									} else {
-										log.Printf("[DynamicWA] ✅ Sent extra text to %s", q.Phone)
-									}
-								}
-								_ = repos.Dynamic.UpdateWhatsAppStatus(dynamicWACtx, q.ID, "sent", "")
-							}
-							sentInBatch++
-							// Rate limit: 10s between sends
-							select {
-							case <-dynamicWACtx.Done():
-								return
-							case <-time.After(10 * time.Second):
-							}
-							// Batch pause: 60s after 25 messages
-							if sentInBatch >= 25 {
-								log.Printf("[DynamicWA] Batch done: %d sent, pausing 60s", sentInBatch)
-								select {
-								case <-dynamicWACtx.Done():
-									return
-								case <-time.After(60 * time.Second):
-								}
-								sentInBatch = 0
-							}
-						}
-					}
-				}
-			}()
-			if dynamicWACtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -542,19 +390,8 @@ func main() {
 		// Stop campaign worker
 		campaignCancel()
 
-		// Stop dynamic WhatsApp queue worker
-		dynamicWACancel()
-
-		// Stop event tag sync worker
-		eventSyncCancel()
-
 		// Stop task worker
 		taskCancel()
-
-		// Stop Kommo sync workers
-		if kommoManager != nil {
-			kommoManager.Stop()
-		}
 
 		// Close all WhatsApp connections
 		devicePool.Shutdown()

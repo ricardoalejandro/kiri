@@ -25,8 +25,8 @@ const taskSelectFields = `
 	COALESCE(ua.display_name, ua.username, '') AS assigned_to_name,
 	COALESCE(uc.display_name, uc.username, '') AS created_by_name,
 	COALESCE(lc.custom_name, lc.name, l.name, '') AS lead_name,
-	COALESCE(e.name, '') AS event_name,
-	COALESCE(p.name, '') AS program_name,
+	'' AS event_name,
+	'' AS program_name,
 	COALESCE(ct.custom_name, ct.name, ct.push_name, '') AS contact_name,
 	COALESCE(tl.name, '') AS list_name,
 	COALESCE((SELECT COUNT(*) FROM subtasks st WHERE st.task_id = t.id), 0) AS subtask_count,
@@ -38,8 +38,6 @@ const taskJoins = `
 	LEFT JOIN users uc ON uc.id = t.created_by
 	LEFT JOIN leads l ON l.id = t.lead_id
 	LEFT JOIN contacts lc ON lc.id = l.contact_id
-	LEFT JOIN events e ON e.id = t.event_id
-	LEFT JOIN programs p ON p.id = t.program_id
 	LEFT JOIN contacts ct ON ct.id = t.contact_id
 	LEFT JOIN task_lists tl ON tl.id = t.list_id
 `

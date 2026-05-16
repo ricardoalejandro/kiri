@@ -32,7 +32,7 @@ const features = [
 ]
 
 const pricing = [
-  { code: 'starter', name: 'Starter', price: 'S/ 149', desc: 'Para equipos pequeños que empiezan.', features: ['3 dispositivos WhatsApp', '5 usuarios', '10 mil contactos', 'Kommo y Google Contacts'] },
+  { code: 'starter', name: 'Starter', price: 'S/ 149', desc: 'Para equipos pequeños que empiezan.', features: ['3 dispositivos WhatsApp', '5 usuarios', '10 mil contactos', 'Google Contacts'] },
   { code: 'pro', name: 'Pro', price: 'S/ 299', desc: 'Para equipos comerciales con más volumen.', features: ['8 dispositivos WhatsApp', '12 usuarios', '50 mil contactos', 'Campañas de difusión'], popular: true },
   { code: 'business', name: 'Business', price: 'S/ 599', desc: 'Para operaciones con automatizaciones.', features: ['20 dispositivos WhatsApp', '30 usuarios', '150 mil contactos', 'Automatizaciones avanzadas'] },
 ]
@@ -40,7 +40,7 @@ const pricing = [
 const testimonials = [
   { quote: 'Kiri nos ayudo a ordenar mas de 15 numeros de WhatsApp en una sola operacion. El pipeline cambio como seguimos leads.', author: 'Gerencia comercial', company: 'Retail multicanal' },
   { quote: 'Pasamos de responder con hojas de Excel abiertas todo el dia a tener campañas, contactos y conversaciones en una sola pantalla.', author: 'Direccion de marketing', company: 'Agencia digital' },
-  { quote: 'La integracion con Kommo fue clave. Ahora el lead entra, se asigna y se atiende por WhatsApp sin perder informacion.', author: 'Direccion general', company: 'Consultora B2B' },
+  { quote: 'El equipo ahora responde con contexto completo. Cada lead entra, se asigna y se atiende por WhatsApp sin perder informacion.', author: 'Direccion general', company: 'Consultora B2B' },
 ]
 
 const stats = [
@@ -54,7 +54,7 @@ const faqs = [
   { q: '¿Puedo conectar varios números de WhatsApp?', a: 'Sí. Dependiendo del plan, puedes conectar desde 3 hasta 20 dispositivos WhatsApp a una sola cuenta.' },
   { q: '¿Qué pasa después de los 14 días de prueba?', a: 'Elige el plan que se ajuste a tu operación. Si decides no continuar, tu cuenta se pausa pero puedes exportar tus datos.' },
   { q: '¿Es seguro compartir mi cuenta con mi equipo?', a: 'Totalmente. Cada usuario tiene permisos controlados y cada cuenta está aislada de otras empresas.' },
-  { q: '¿Se integra con otros CRMs?', a: 'Sí. Actualmente integramos con Kommo y Google Contacts. Estamos trabajando en más integraciones.' },
+  { q: '¿Se integra con Google Contacts?', a: 'Sí. Puedes mantener tus contactos sincronizados con Google Contacts y trabajar el seguimiento comercial desde Kiri.' },
 ]
 
 const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || 'https://kiri.naperu.cloud').replace(/\/$/, '')
@@ -83,8 +83,13 @@ export default function HomePage() {
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2.5">
-            <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-sm">
-              <MessageSquare className="w-5 h-5 text-white" />
+            <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-sm relative overflow-hidden">
+              <span className="text-white font-black text-2xl leading-none -mt-0.5">K</span>
+              <span className="absolute left-2 bottom-2 flex gap-0.5">
+                <span className="w-1 h-1 rounded-full bg-white" />
+                <span className="w-1 h-1 rounded-full bg-white" />
+                <span className="w-1 h-1 rounded-full bg-white" />
+              </span>
             </div>
             <span className="font-bold text-lg tracking-tight text-slate-900">Kiri</span>
           </Link>

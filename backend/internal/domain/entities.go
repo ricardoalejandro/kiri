@@ -16,8 +16,6 @@ type Account struct {
 	MaxDevices             int        `json:"max_devices"`
 	StorageLimitBytes      int64      `json:"storage_limit_bytes"`
 	IsActive               bool       `json:"is_active"`
-	MCPEnabled             bool       `json:"mcp_enabled"`
-	KommoEnabled           bool       `json:"kommo_enabled"`
 	DefaultIncomingStageID *uuid.UUID `json:"default_incoming_stage_id,omitempty"`
 	CreatedAt              time.Time  `json:"created_at"`
 	UpdatedAt              time.Time  `json:"updated_at"`
@@ -152,18 +150,15 @@ const (
 const (
 	PermChats        = "chats"
 	PermContacts     = "contacts"
-	PermPrograms     = "programs"
 	PermDevices      = "devices"
 	PermLeads        = "leads"
-	PermEvents       = "events"
 	PermBroadcasts   = "broadcasts"
 	PermTags         = "tags"
 	PermSettings     = "settings"
 	PermIntegrations = "integrations"
+	PermWhatsAppAPI  = "whatsapp_api"
 	PermAutomations  = "automations"
 	PermBots         = "bots"
-	PermSurveys      = "surveys"
-	PermDynamics     = "dynamics"
 	PermTasks        = "tasks"
 	PermDocuments    = "documents"
 	PermAll          = "*"
@@ -171,10 +166,10 @@ const (
 
 // AllPermissions contains all available permission modules in display order
 var AllPermissions = []string{
-	PermChats, PermContacts, PermLeads, PermPrograms,
-	PermAutomations, PermBots, PermDevices, PermEvents,
-	PermBroadcasts, PermSurveys, PermTasks, PermDynamics,
-	PermDocuments, PermTags, PermSettings, PermIntegrations,
+	PermChats, PermContacts, PermLeads,
+	PermAutomations, PermBots, PermDevices,
+	PermBroadcasts, PermTasks, PermDocuments,
+	PermTags, PermSettings, PermIntegrations, PermWhatsAppAPI,
 }
 
 // Role represents a named set of module permissions
@@ -201,59 +196,8 @@ type UserAccount struct {
 	// Populated on demand
 	AccountName       string   `json:"account_name,omitempty"`
 	AccountSlug       string   `json:"account_slug,omitempty"`
-	AccountMCPEnabled bool     `json:"account_mcp_enabled,omitempty"`
 	RoleName          string   `json:"role_name,omitempty"`
 	Permissions       []string `json:"permissions,omitempty"`
-}
-
-// Integration providers and scopes.
-const (
-	IntegrationProviderKommo     = "kommo"
-	IntegrationScopeGlobal       = "global"
-	IntegrationScopeMultiAccount = "multi_account"
-	IntegrationScopeAccount      = "account"
-
-	IntegrationStatusActive = "active"
-	IntegrationStatusPaused = "paused"
-	IntegrationStatusError  = "error"
-)
-
-// IntegrationInstance represents one configured external integration instance.
-// For Kommo, one instance maps to one Kommo license/subdomain and may serve many accounts.
-type IntegrationInstance struct {
-	ID            uuid.UUID       `json:"id"`
-	Provider      string          `json:"provider"`
-	Scope         string          `json:"scope"`
-	Name          string          `json:"name"`
-	Status        string          `json:"status"`
-	IsActive      bool            `json:"is_active"`
-	Subdomain     string          `json:"subdomain,omitempty"`
-	ClientID      string          `json:"client_id,omitempty"`
-	ClientSecret  string          `json:"-"`
-	AccessToken   string          `json:"-"`
-	RefreshToken  string          `json:"-"`
-	RedirectURI   string          `json:"redirect_uri,omitempty"`
-	WebhookSecret string          `json:"-"`
-	Config        json.RawMessage `json:"config,omitempty"`
-	LastSyncAt    *time.Time      `json:"last_sync_at,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-
-	Accounts []IntegrationInstanceAccount `json:"accounts,omitempty"`
-}
-
-// IntegrationInstanceAccount links a shared integration instance to a Kiri account.
-type IntegrationInstanceAccount struct {
-	ID                    uuid.UUID  `json:"id"`
-	IntegrationInstanceID uuid.UUID  `json:"integration_instance_id"`
-	AccountID             uuid.UUID  `json:"account_id"`
-	Enabled               bool       `json:"enabled"`
-	LastSyncedAt          *time.Time `json:"last_synced_at,omitempty"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
-
-	AccountName string `json:"account_name,omitempty"`
-	AccountSlug string `json:"account_slug,omitempty"`
 }
 
 // Device represents a WhatsApp connection
@@ -320,7 +264,6 @@ type Contact struct {
 	Notes           *string    `json:"notes,omitempty"`
 	Source          *string    `json:"source,omitempty"`
 	IsGroup         bool       `json:"is_group"`
-	KommoID         *int64     `json:"kommo_id,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	LastActivity    *time.Time `json:"last_activity,omitempty"`
@@ -740,14 +683,12 @@ type Lead struct {
 	Tags           []string               `json:"tags,omitempty"`
 	CustomFields   map[string]interface{} `json:"custom_fields,omitempty"`
 	AssignedTo     *uuid.UUID             `json:"assigned_to,omitempty"`
-	KommoID        *int64                 `json:"kommo_id,omitempty"`
 	IsArchived     bool                   `json:"is_archived"`
 	ArchivedAt     *time.Time             `json:"archived_at,omitempty"`
 	ArchiveReason  string                 `json:"archive_reason,omitempty"`
 	IsBlocked      bool                   `json:"is_blocked"`
 	BlockedAt      *time.Time             `json:"blocked_at,omitempty"`
 	BlockReason    string                 `json:"block_reason,omitempty"`
-	KommoDeletedAt *time.Time             `json:"kommo_deleted_at,omitempty"`
 	CreatedAt      time.Time              `json:"created_at"`
 	UpdatedAt      time.Time              `json:"updated_at"`
 
@@ -777,7 +718,6 @@ type Pipeline struct {
 	Name        string           `json:"name"`
 	Description *string          `json:"description,omitempty"`
 	IsDefault   bool             `json:"is_default"`
-	KommoID     *int64           `json:"kommo_id,omitempty"`
 	Stages      []*PipelineStage `json:"stages,omitempty"`
 	CreatedAt   time.Time        `json:"created_at"`
 	UpdatedAt   time.Time        `json:"updated_at"`
@@ -790,7 +730,6 @@ type PipelineStage struct {
 	Name       string    `json:"name"`
 	Color      string    `json:"color"`
 	Position   int       `json:"position"`
-	KommoID    *int64    `json:"kommo_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	LeadCount  int       `json:"lead_count,omitempty"`
 }
@@ -821,7 +760,6 @@ type Tag struct {
 	AccountID uuid.UUID `json:"account_id"`
 	Name      string    `json:"name"`
 	Color     string    `json:"color"`
-	KommoID   *int64    `json:"kommo_id,omitempty"`
 	Negate    bool      `json:"negate,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -1045,7 +983,6 @@ type Interaction struct {
 	NextActionDate *time.Time `json:"next_action_date,omitempty"`
 	CreatedBy      *uuid.UUID `json:"created_by,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
-	KommoCallSlot  *int       `json:"kommo_call_slot,omitempty"`
 
 	// Populated on demand
 	CreatedByName *string `json:"created_by_name,omitempty"`
@@ -1241,7 +1178,7 @@ func DefaultCampaignSettings() map[string]interface{} {
 
 // --- Programs (Courses, Workshops, etc.) ---
 
-// ProgramFolder represents a folder for organising programs
+// ProgramFolder is retained only for legacy data migrations.
 type ProgramFolder struct {
 	ID        uuid.UUID  `json:"id"`
 	AccountID uuid.UUID  `json:"account_id"`
@@ -1403,20 +1340,6 @@ const (
 	LogbookStatusPending   = "pending"
 	LogbookStatusCompleted = "completed"
 )
-
-// APIKey represents an API key for MCP / external integrations
-type APIKey struct {
-	ID          uuid.UUID  `json:"id"`
-	AccountID   uuid.UUID  `json:"account_id"`
-	Name        string     `json:"name"`
-	KeyHash     string     `json:"-"`
-	KeyPrefix   string     `json:"key_prefix"`
-	Permissions string     `json:"permissions"`
-	IsActive    bool       `json:"is_active"`
-	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-}
 
 // ErosConversation represents a persistent chat conversation with Eros AI
 type ErosConversation struct {

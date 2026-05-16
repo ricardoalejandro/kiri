@@ -1,6 +1,6 @@
 # Kiri
 
-CRM SaaS multi-tenant centrado en WhatsApp, con dashboard web, automatizaciones, Kommo CRM, Google Contacts, documentos, encuestas, formularios dinamicos y almacenamiento de media.
+CRM SaaS multi-tenant centrado en WhatsApp, ventas, contactos, leads, pipelines, tareas, bots, automatizaciones, documentos y almacenamiento de media.
 
 ## Arquitectura
 
@@ -14,8 +14,8 @@ CRM SaaS multi-tenant centrado en WhatsApp, con dashboard web, automatizaciones,
                     │       │       │  │ connections    │  │  │
                     │  ┌────▼────┐  │  └────────────────┘  │  │
                     │  │WebSocket│  │  ┌────────────────┐  │  │
-                    │  │  Hub    │  │  │ MCP Server     │  │  │
-                    │  └─────────┘  │  │ :8081          │  │  │
+                    │  │  Hub    │  │  │ WhatsApp Pool  │  │  │
+                    │  └─────────┘  │  │ + workers      │  │  │
                     └───────────────┴──┴────────────────┴──┘
                                    │
                     ┌──────────────┼──────────────┐
@@ -35,7 +35,6 @@ CRM SaaS multi-tenant centrado en WhatsApp, con dashboard web, automatizaciones,
 - **pgx v5** - Driver PostgreSQL nativo.
 - **Redis** - Cache, sesiones y soporte operativo.
 - **MinIO** - Almacenamiento S3-compatible para archivos y media.
-- **mcp-go** - Servidor MCP expuesto por SSE en despliegue.
 
 ### Frontend (Next.js)
 - **Next.js 14** - React framework con App Router.
@@ -54,21 +53,17 @@ CRM SaaS multi-tenant centrado en WhatsApp, con dashboard web, automatizaciones,
 
 ## Modulos Principales
 
-- **WhatsApp y chats**: dispositivos, QR, mensajes, media, contactos, stickers, reacciones, encuestas y WebSocket en tiempo real.
+- **WhatsApp y chats**: dispositivos, QR, mensajes, media, contactos, stickers, reacciones y WebSocket en tiempo real.
 - **CRM comercial**: contactos, leads, pipelines, tags, interacciones, campañas y respuestas rapidas.
-- **Programas y eventos**: participantes, etapas, asistencia, sesiones, bitacoras, formulas y sincronizacion con Google Contacts.
 - **Automatizaciones y bots**: flujos visuales, ejecuciones, logs, simulacion y activacion por plan.
-- **Encuestas y dinamicas publicas**: formularios publicos por slug, registros, uploads y links compartibles.
 - **Documentos y storage**: plantillas, generacion de documentos, uso de almacenamiento, deduplicacion y media proxy.
 - **Administracion SaaS**: cuentas, usuarios, roles, planes, suscripciones, integraciones y permisos por modulo.
-- **Integraciones**: Kommo multi-instancia, Google Contacts, WhatsApp Cloud API y MCP.
+- **Integraciones**: Google Contacts y WhatsApp Cloud API.
 
 ## Inicio Rapido
 
 ### Prerrequisitos
 - Docker & Docker Compose.
-- Go 1.24+ para desarrollo local.
-- Node.js 20+ para desarrollo local.
 
 ### Con Docker
 
@@ -81,20 +76,10 @@ make logs
 La aplicacion local queda disponible en:
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8080
-- MCP/SSE: http://localhost:8081/mcp cuando esta configurado por el despliegue.
 
-### Desarrollo Local
+### Desarrollo
 
-```bash
-# Base de datos y cache
-make db
-
-# Backend
-cd backend && go run ./cmd/server
-
-# Frontend
-cd frontend && npm install && npm run dev
-```
+El desarrollo y la compilacion se hacen dentro de Docker. No instales Go ni Node en el host del VPS.
 
 ## Configuracion
 
@@ -120,17 +105,17 @@ MINIO_BUCKET=kiri-media
 MINIO_USE_SSL=false
 ```
 
-El compose de produccion tambien contempla variables para Kommo, Google Contacts, WhatsApp Cloud API, URLs publicas y storage.
+El compose de produccion contempla variables para Google Contacts, WhatsApp Cloud API, URLs publicas y storage.
 
 ## API
 
 Las rutas se definen principalmente en `backend/internal/api/server.go`.
 
 Grupos principales:
-- Publico: `/health`, `/api/version`, `/api/public/plans`, `/api/public/surveys/*`, `/api/public/dynamics/*`, webhooks de Kommo y WhatsApp Cloud API.
+- Publico: `/health`, `/api/version`, `/api/public/plans` y webhooks de WhatsApp Cloud API.
 - Auth: `/api/auth/login`, `/api/auth/register`, `/api/auth/refresh`, `/api/auth/logout`.
-- Dashboard protegido: `/api/me`, `/api/settings`, `/api/storage`, `/api/devices`, `/api/chats`, `/api/messages`, `/api/contacts`, `/api/leads`, `/api/pipelines`, `/api/tags`, `/api/campaigns`, `/api/programs`, `/api/events`, `/api/tasks`, `/api/document-templates`, `/api/quick-replies`, `/api/bots`, `/api/automations`, `/api/surveys`, `/api/dynamics`.
-- Integraciones: `/api/kommo`, `/api/google`, `/api/google/contacts`, `/api/whatsapp-api`.
+- Dashboard protegido: `/api/me`, `/api/settings`, `/api/storage`, `/api/devices`, `/api/chats`, `/api/messages`, `/api/contacts`, `/api/leads`, `/api/pipelines`, `/api/tags`, `/api/campaigns`, `/api/tasks`, `/api/document-templates`, `/api/quick-replies`, `/api/bots`, `/api/automations`.
+- Integraciones: `/api/google`, `/api/google/contacts`, `/api/whatsapp-api`.
 - Admin SaaS: `/api/admin/*`.
 - WebSocket: `/ws?token=<jwt>`.
 
@@ -161,9 +146,7 @@ kiri/
 │   │   ├── repository/    # Acceso a datos
 │   │   ├── service/       # Logica de negocio
 │   │   ├── whatsapp/      # DevicePool + whatsmeow
-│   │   ├── kommo/         # Integracion Kommo
 │   │   ├── google/        # Google Contacts
-│   │   ├── mcp/           # Servidor MCP
 │   │   ├── storage/       # MinIO/S3
 │   │   └── ws/            # WebSocket Hub
 │   └── pkg/

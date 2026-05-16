@@ -15,6 +15,7 @@ import (
 	"github.com/naperu/kiri/internal/ws"
 	"github.com/naperu/kiri/pkg/cache"
 )
+
 const (
 	autoWorkerCount  = 50  // global goroutine pool size
 	autoQueueBuffer  = 500 // buffered job channel
@@ -240,23 +241,18 @@ func (s *AutomationService) enqueueExecution(
 
 func (s *AutomationService) checkRateLimit(ctx context.Context, accountID uuid.UUID) bool {
 	if s.cache == nil {
-		return true // no Redis — allow all
-	}
-	key := fmt.Sprintf("rate:auto:%s", accountID.String())
-	raw, err := s.cache.Get(ctx, key)
-	if err != nil {
-		return true // Redis error — allow
-	}
-	var count int
-	if raw != nil {
-		fmt.Sscanf(string(raw), "%d", &count)
-	}
-	if count >= autoRateLimit {
+		log.Printf("[AUTO] Redis unavailable; blocking automation rate check for account %s", accountID)
 		return false
 	}
-	// Increment
-	newCount := count + 1
-	_ = s.cache.Set(ctx, key, []byte(fmt.Sprintf("%d", newCount)), autoRateTTL)
+	key := fmt.Sprintf("rate:auto:%s", accountID.String())
+	count, err := s.cache.IncrWithTTL(ctx, key, autoRateTTL)
+	if err != nil {
+		log.Printf("[AUTO] Redis rate limiter error for account %s: %v", accountID, err)
+		return false
+	}
+	if count > autoRateLimit {
+		return false
+	}
 	return true
 }
 

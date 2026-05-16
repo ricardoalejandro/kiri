@@ -24,7 +24,6 @@ export interface Pipeline {
   name: string
   description?: string | null
   is_default: boolean
-  kommo_id?: number | null
   stages: PipelineStage[] | null
 }
 
@@ -70,13 +69,11 @@ export interface Lead {
   notes: string
   tags: string[]
   structured_tags: StructuredTag[] | null
-  kommo_id: number | null
   is_archived: boolean
   archived_at: string | null
   is_blocked: boolean
   blocked_at: string | null
   block_reason: string
-  kommo_deleted_at: string | null
   assigned_to: string
   created_at: string
   updated_at: string
@@ -109,7 +106,6 @@ export interface Contact {
   notes?: string | null
   source?: string | null
   is_group?: boolean
-  kommo_id?: number | null
   created_at?: string
   updated_at?: string
   last_activity?: string | null

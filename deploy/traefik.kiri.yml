@@ -15,21 +15,6 @@ http:
       tls:
         certResolver: letsencrypt
       priority: 100
-    kiri-mcp-router:
-      rule: "Host(`kiri.naperu.cloud`) && (PathPrefix(`/mcp`) || PathPrefix(`/.well-known/oauth-authorization-server`) || PathPrefix(`/.well-known/oauth-protected-resource`))"
-      service: kiri-mcp-service
-      entryPoints:
-        - web
-      middlewares:
-        - redirect-to-https
-    kiri-mcp-router-secure:
-      rule: "Host(`kiri.naperu.cloud`) && (PathPrefix(`/mcp`) || PathPrefix(`/.well-known/oauth-authorization-server`) || PathPrefix(`/.well-known/oauth-protected-resource`))"
-      service: kiri-mcp-service
-      entryPoints:
-        - websecure
-      tls:
-        certResolver: letsencrypt
-      priority: 110
     kiri-frontend-router:
       rule: "Host(`kiri.naperu.cloud`)"
       service: kiri-frontend-service
@@ -51,7 +36,7 @@ http:
       entryPoints:
         - web
       middlewares:
-        - redirect-to-https
+        - kiri-landing-to-root
     kiri-landing-router-secure:
       rule: "Host(`landing.kiri.naperu.cloud`)"
       service: kiri-frontend-service
@@ -59,6 +44,8 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - kiri-landing-to-root
       priority: 1
     kiri-minio-router:
       rule: "Host(`media.kiri.naperu.cloud`)"
@@ -80,11 +67,6 @@ http:
         servers:
           - url: http://kiri-backend:8080
         passHostHeader: true
-    kiri-mcp-service:
-      loadBalancer:
-        servers:
-          - url: http://kiri-backend:8081
-        passHostHeader: true
     kiri-frontend-service:
       loadBalancer:
         servers:
@@ -95,3 +77,13 @@ http:
         servers:
           - url: http://kiri-minio:9000
         passHostHeader: true
+  middlewares:
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+    kiri-landing-to-root:
+      redirectRegex:
+        regex: "^https?://landing\\.kiri\\.naperu\\.cloud/(.*)"
+        replacement: "https://kiri.naperu.cloud/$1"
+        permanent: true

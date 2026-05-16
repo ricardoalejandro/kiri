@@ -3,9 +3,8 @@
 import { useEffect, useState } from 'react'
 import {
   Building2, Users, Plus, Pencil, Trash2, Power, KeyRound,
-  Search, X, Shield, ChevronDown, Link2, Lock, CheckSquare, Square, Bot,
-  Plug, RefreshCw, AlertTriangle, HardDrive, Database, CheckCircle2,
-  Activity, Eye, Send, Clock
+  Search, X, Shield, ChevronDown, Link2, Lock, CheckSquare, Square,
+  HardDrive, Database, AlertTriangle
 } from 'lucide-react'
 
 interface Account {
@@ -16,9 +15,7 @@ interface Account {
   max_devices: number
   storage_limit_bytes: number
   is_active: boolean
-  mcp_enabled: boolean
-  kommo_enabled?: boolean
-  subscription_status?: string
+    subscription_status?: string
   trial_ends_at?: string | null
   current_period_end?: string | null
   grace_ends_at?: string | null
@@ -73,88 +70,6 @@ interface Role {
   created_at: string
 }
 
-interface IntegrationAccount {
-  account_id: string
-  account_name: string
-  account_slug: string
-  enabled: boolean
-}
-
-interface IntegrationInstance {
-  id: string
-  provider: string
-  scope: string
-  name: string
-  status: string
-  is_active: boolean
-  subdomain: string
-  client_id: string
-  redirect_uri: string
-  has_client_secret: boolean
-  has_access_token: boolean
-  has_refresh_token: boolean
-  has_webhook_secret: boolean
-  accounts: IntegrationAccount[]
-  last_sync_at?: string
-  created_at: string
-}
-
-interface IntegrationMonitorEntry {
-  id: number
-  time: string
-  source: string
-  message: string
-  level: string
-  account_id?: string
-  account_name?: string
-  entity_type?: string
-  kommo_entity_id?: number
-  operation?: string
-  status?: string
-  direction?: string
-  duration_ms?: number
-  request_count?: number
-  batch_size?: number
-  details?: Record<string, unknown>
-}
-
-interface IntegrationMonitorData {
-  entries: IntegrationMonitorEntry[]
-  stats: Record<string, { count?: number; last_at?: string; last_msg?: string }>
-}
-
-interface IntegrationOutboxTotals {
-  total: number
-  pending: number
-  processing: number
-  errored: number
-  retried: number
-}
-
-interface IntegrationOutboxItem extends IntegrationOutboxTotals {
-  operation: string
-  account_id: string
-  account_name: string
-  oldest_at: string
-  last_error: string
-}
-
-interface IntegrationOutboxData {
-  items: IntegrationOutboxItem[]
-  totals: IntegrationOutboxTotals
-}
-
-interface IntegrationHealth {
-  runtime_running: boolean
-  webhook_configured: boolean
-  webhook_url: string
-  public_url_configured: boolean
-  assigned_count: number
-  outbox?: IntegrationOutboxTotals
-  worker?: { running?: boolean; active_accounts?: number; connected_count?: number; last_check?: string }
-  events_poller?: { last_poll_at?: string; seconds_since_last_poll?: number; last_poll_events_found?: number; last_poll_leads_synced?: number }
-}
-
 interface NewUserAssignment {
   account_id: string
   role: string
@@ -166,17 +81,12 @@ const ALL_MODULES = [
   { key: 'chats', label: 'Chats', color: 'emerald' },
   { key: 'contacts', label: 'Contactos', color: 'blue' },
   { key: 'leads', label: 'Leads', color: 'violet' },
-  { key: 'programs', label: 'Programas', color: 'orange' },
   { key: 'automations', label: 'Automatizaciones', color: 'emerald' },
   { key: 'bots', label: 'Bots', color: 'sky' },
   { key: 'devices', label: 'Dispositivos', color: 'cyan' },
-  { key: 'events', label: 'Eventos', color: 'pink' },
   { key: 'broadcasts', label: 'Difusión', color: 'yellow' },
   { key: 'tags', label: 'Etiquetas', color: 'teal' },
   { key: 'settings', label: 'Configuración', color: 'slate' },
-  { key: 'integrations', label: 'Integraciones', color: 'indigo' },
-  { key: 'surveys', label: 'Encuestas', color: 'amber' },
-  { key: 'dynamics', label: 'Dinámicas', color: 'rose' },
   { key: 'tasks', label: 'Tareas', color: 'lime' },
   { key: 'documents', label: 'Plantillas', color: 'purple' },
 ]
@@ -202,64 +112,46 @@ function bytesToGb(value?: number) {
   return value && value > 0 ? Math.round((value / 1024 / 1024 / 1024) * 10) / 10 : 0
 }
 
-type Tab = 'accounts' | 'users' | 'roles' | 'integrations'
+type Tab = 'accounts' | 'users' | 'roles'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('accounts')
   const [accounts, setAccounts] = useState<Account[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
-  const [integrations, setIntegrations] = useState<IntegrationInstance[]>([])
+  const [roles, setRoles] = useState<Role[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterAccountId, setFilterAccountId] = useState('')
-
-  // Modals
   const [showAccountModal, setShowAccountModal] = useState(false)
-  const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [showUserModal, setShowUserModal] = useState(false)
-  const [editingUser, setEditingUser] = useState<User | null>(null)
+  const [showRoleModal, setShowRoleModal] = useState(false)
   const [showPasswordModal, setShowPasswordModal] = useState(false)
+  const [showAssignModal, setShowAssignModal] = useState(false)
+  const [showPurgeModal, setShowPurgeModal] = useState(false)
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null)
+  const [editingUser, setEditingUser] = useState<User | null>(null)
+  const [editingRole, setEditingRole] = useState<Role | null>(null)
+  const [roleForm, setRoleForm] = useState<{ name: string; description: string; permissions: string[] }>({ name: '', description: '', permissions: [] })
   const [passwordUserId, setPasswordUserId] = useState('')
   const [newPassword, setNewPassword] = useState('')
-
-  const [showPurgeModal, setShowPurgeModal] = useState(false)
-  const [purgeAccount, setPurgeAccount] = useState<Account | null>(null)
-  const [purgeSummary, setPurgeSummary] = useState<Record<string, unknown> | null>(null)
-  const [purgeConfirmation, setPurgeConfirmation] = useState('')
-  const [purgeDeleteFiles, setPurgeDeleteFiles] = useState(true)
-
-  // Account assignments modal
-  const [showAssignModal, setShowAssignModal] = useState(false)
   const [assignUserId, setAssignUserId] = useState('')
   const [assignUserName, setAssignUserName] = useState('')
-  const [userAssignments, setUserAssignments] = useState<UserAccountAssignment[]>([])
   const [assignAccountId, setAssignAccountId] = useState('')
   const [assignRole, setAssignRole] = useState('agent')
   const [assignRoleId, setAssignRoleId] = useState('')
-
-  // Roles
-  const [roles, setRoles] = useState<Role[]>([])
-  const [showRoleModal, setShowRoleModal] = useState(false)
-  const [editingRole, setEditingRole] = useState<Role | null>(null)
-  const [roleForm, setRoleForm] = useState({ name: '', description: '', permissions: [] as string[] })
-
-  const [showIntegrationModal, setShowIntegrationModal] = useState(false)
-  const [editingIntegration, setEditingIntegration] = useState<IntegrationInstance | null>(null)
-  const [integrationForm, setIntegrationForm] = useState({
-    name: '', subdomain: '', client_id: '', client_secret: '', access_token: '', refresh_token: '', redirect_uri: '', webhook_secret: '', is_active: true
-  })
-  const [selectedIntegrationAccounts, setSelectedIntegrationAccounts] = useState<string[]>([])
-  const [showIntegrationMonitor, setShowIntegrationMonitor] = useState(false)
-  const [monitorIntegration, setMonitorIntegration] = useState<IntegrationInstance | null>(null)
-  const [integrationMonitor, setIntegrationMonitor] = useState<IntegrationMonitorData | null>(null)
-  const [integrationHealth, setIntegrationHealth] = useState<IntegrationHealth | null>(null)
-  const [integrationOutbox, setIntegrationOutbox] = useState<IntegrationOutboxData | null>(null)
-  const [monitorLoading, setMonitorLoading] = useState(false)
+  const [userAssignments, setUserAssignments] = useState<UserAccountAssignment[]>([])
+  const [purgeAccount, setPurgeAccount] = useState<Account | null>(null)
+  const [purgeSummary, setPurgeSummary] = useState<{ tables?: Record<string, number | null>; storage_objects?: number } | null>(null)
+  const [purgeConfirmation, setPurgeConfirmation] = useState('')
+  const [purgeDeleteFiles, setPurgeDeleteFiles] = useState(true)
+  const purgeTables = purgeSummary?.tables
+  const purgeRecordCount = purgeTables ? Object.values(purgeTables).reduce<number>((sum, value) => sum + (typeof value === 'number' ? value : 0), 0) : 0
+  const purgeStorageObjects = purgeSummary?.storage_objects ?? 0
 
   // Account form
   const [accountForm, setAccountForm] = useState({
-    name: '', slug: '', plan: 'basic', max_devices: 5, storage_limit_gb: 0, mcp_enabled: false,
+    name: '', slug: '', plan: 'basic', max_devices: 5, storage_limit_gb: 0,
     subscription_status: 'active', trial_ends_at: '', current_period_end: ''
   })
 
@@ -319,19 +211,9 @@ export default function AdminPage() {
     }
   }
 
-  async function fetchIntegrations() {
-    try {
-      const res = await fetch('/api/admin/integrations?provider=kommo', { headers })
-      const data = await res.json()
-      if (data.success) setIntegrations(data.integrations || [])
-    } catch (e) {
-      console.error('Failed to fetch integrations:', e)
-    }
-  }
-
   useEffect(() => {
     setLoading(true)
-    Promise.all([fetchAccounts(), fetchUsers(), fetchPlans(), fetchRoles(), fetchIntegrations()]).finally(() => setLoading(false))
+    Promise.all([fetchAccounts(), fetchUsers(), fetchPlans(), fetchRoles()]).finally(() => setLoading(false))
   }, [])
 
   useEffect(() => {
@@ -342,10 +224,8 @@ export default function AdminPage() {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (showIntegrationMonitor) { setShowIntegrationMonitor(false); return }
       if (showPasswordModal) { setShowPasswordModal(false); return }
       if (showPurgeModal) { setShowPurgeModal(false); return }
-      if (showIntegrationModal) { setShowIntegrationModal(false); return }
       if (showRoleModal) { setShowRoleModal(false); return }
       if (showAssignModal) { setShowAssignModal(false); return }
       if (showUserModal) { setShowUserModal(false); return }
@@ -353,12 +233,12 @@ export default function AdminPage() {
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [showIntegrationMonitor, showPasswordModal, showPurgeModal, showIntegrationModal, showRoleModal, showAssignModal, showUserModal, showAccountModal])
+  }, [showPasswordModal, showPurgeModal, showRoleModal, showAssignModal, showUserModal, showAccountModal])
 
   // Account CRUD
   function openCreateAccount() {
     setEditingAccount(null)
-    setAccountForm({ name: '', slug: '', plan: 'basic', max_devices: 5, storage_limit_gb: 0, mcp_enabled: false, subscription_status: 'active', trial_ends_at: '', current_period_end: '' })
+    setAccountForm({ name: '', slug: '', plan: 'basic', max_devices: 5, storage_limit_gb: 0, subscription_status: 'active', trial_ends_at: '', current_period_end: '' })
     setShowAccountModal(true)
   }
 
@@ -370,7 +250,6 @@ export default function AdminPage() {
       plan: a.plan,
       max_devices: a.max_devices,
       storage_limit_gb: bytesToGb(a.storage_limit_bytes),
-      mcp_enabled: a.mcp_enabled,
       subscription_status: a.subscription_status || 'active',
       trial_ends_at: dateInputValue(a.trial_ends_at),
       current_period_end: dateInputValue(a.current_period_end),
@@ -390,7 +269,6 @@ export default function AdminPage() {
       plan: accountForm.plan,
       max_devices: accountForm.max_devices,
       storage_limit_bytes: gbToBytes(accountForm.storage_limit_gb),
-      mcp_enabled: accountForm.mcp_enabled,
     }
 
     const res = await fetch(url, { method, headers, body: JSON.stringify(accountPayload) })
@@ -469,7 +347,7 @@ export default function AdminPage() {
     }
     setShowPurgeModal(false)
     setPurgeAccount(null)
-    await Promise.all([fetchAccounts(), fetchUsers(), fetchIntegrations()])
+    await Promise.all([fetchAccounts(), fetchUsers()])
   }
 
   // User CRUD
@@ -642,12 +520,6 @@ export default function AdminPage() {
     r.description.toLowerCase().includes(search.toLowerCase())
   )
 
-  const filteredIntegrations = integrations.filter(i =>
-    i.name.toLowerCase().includes(search.toLowerCase()) ||
-    i.provider.toLowerCase().includes(search.toLowerCase()) ||
-    (i.subdomain || '').toLowerCase().includes(search.toLowerCase())
-  )
-
   // Role CRUD
   function openCreateRole() {
     setEditingRole(null)
@@ -693,134 +565,6 @@ export default function AdminPage() {
     const data = await res.json()
     if (!data.success) { alert(data.error || 'Error al eliminar'); return }
     fetchRoles()
-  }
-
-  function openCreateIntegration() {
-    setEditingIntegration(null)
-    setIntegrationForm({ name: '', subdomain: '', client_id: '', client_secret: '', access_token: '', refresh_token: '', redirect_uri: '', webhook_secret: '', is_active: true })
-    setSelectedIntegrationAccounts([])
-    setShowIntegrationModal(true)
-  }
-
-  function openEditIntegration(instance: IntegrationInstance) {
-    setEditingIntegration(instance)
-    setIntegrationForm({
-      name: instance.name,
-      subdomain: instance.subdomain,
-      client_id: instance.client_id || '',
-      client_secret: '',
-      access_token: '',
-      refresh_token: '',
-      redirect_uri: instance.redirect_uri || '',
-      webhook_secret: '',
-      is_active: instance.is_active,
-    })
-    setSelectedIntegrationAccounts(instance.accounts?.filter(a => a.enabled).map(a => a.account_id) || [])
-    setShowIntegrationModal(true)
-  }
-
-  function toggleSelectedIntegrationAccount(accountId: string) {
-    setSelectedIntegrationAccounts(prev => prev.includes(accountId)
-      ? prev.filter(id => id !== accountId)
-      : [...prev, accountId]
-    )
-  }
-
-  async function syncIntegrationAccounts(instance: IntegrationInstance, desired: string[]) {
-    const current = new Set((instance.accounts || []).filter(a => a.enabled).map(a => a.account_id))
-    const desiredSet = new Set(desired)
-    await Promise.all([
-      ...desired.filter(id => !current.has(id)).map(accountId => fetch(`/api/admin/integrations/${instance.id}/accounts`, {
-        method: 'POST', headers, body: JSON.stringify({ account_id: accountId, enabled: true })
-      })),
-      ...(instance.accounts || []).filter(a => current.has(a.account_id) && !desiredSet.has(a.account_id)).map(a => fetch(`/api/admin/integrations/${instance.id}/accounts/${a.account_id}`, {
-        method: 'DELETE', headers
-      })),
-    ])
-  }
-
-  async function saveIntegration() {
-    if (!integrationForm.name.trim()) { alert('El nombre de la integración es requerido'); return }
-    const method = editingIntegration ? 'PUT' : 'POST'
-    const url = editingIntegration ? `/api/admin/integrations/${editingIntegration.id}` : '/api/admin/integrations'
-    const payload = {
-      provider: 'kommo', scope: 'multi_account', status: 'active', ...integrationForm,
-      accounts: editingIntegration ? [] : selectedIntegrationAccounts,
-    }
-    const res = await fetch(url, { method, headers, body: JSON.stringify(payload) })
-    const data = await res.json()
-    if (!data.success) { alert(data.error || 'Error al guardar integración'); return }
-    if (editingIntegration) {
-      await syncIntegrationAccounts(editingIntegration, selectedIntegrationAccounts)
-      await fetch(`/api/admin/integrations/${editingIntegration.id}/reload`, { method: 'POST', headers })
-    }
-    setShowIntegrationModal(false)
-    await Promise.all([fetchIntegrations(), fetchAccounts()])
-  }
-
-  async function deleteIntegration(id: string) {
-    const instance = integrations.find(i => i.id === id)
-    if (!instance) return
-    if (!confirm(`¿Eliminar la integración "${instance.name}"? Las cuentas asignadas dejarán de sincronizar Kommo.`)) return
-    const res = await fetch(`/api/admin/integrations/${id}`, { method: 'DELETE', headers })
-    const data = await res.json()
-    if (!data.success) { alert(data.error || 'Error al eliminar integración'); return }
-    await Promise.all([fetchIntegrations(), fetchAccounts()])
-  }
-
-  async function reloadIntegrations() {
-    const first = integrations[0]
-    if (!first) return fetchIntegrations()
-    await fetch(`/api/admin/integrations/${first.id}/reload`, { method: 'POST', headers })
-    fetchIntegrations()
-  }
-
-  async function refreshIntegrationDiagnostics(instance: IntegrationInstance | null = monitorIntegration) {
-    if (!instance) return
-    setMonitorLoading(true)
-    try {
-      const [monitorRes, healthRes, outboxRes] = await Promise.all([
-        fetch(`/api/admin/integrations/${instance.id}/monitor`, { headers }),
-        fetch(`/api/admin/integrations/${instance.id}/health`, { headers }),
-        fetch(`/api/admin/integrations/${instance.id}/outbox`, { headers }),
-      ])
-      const [monitorData, healthData, outboxData] = await Promise.all([
-        monitorRes.json(), healthRes.json(), outboxRes.json()
-      ])
-      if (monitorData.success) setIntegrationMonitor(monitorData.monitor || null)
-      if (healthData.success) setIntegrationHealth(healthData.health || null)
-      if (outboxData.success) setIntegrationOutbox(outboxData.outbox || null)
-    } catch (e) {
-      console.error('Failed to fetch integration diagnostics:', e)
-    } finally {
-      setMonitorLoading(false)
-    }
-  }
-
-  function openIntegrationDiagnostics(instance: IntegrationInstance) {
-    setMonitorIntegration(instance)
-    setIntegrationMonitor(null)
-    setIntegrationHealth(null)
-    setIntegrationOutbox(null)
-    setShowIntegrationMonitor(true)
-    refreshIntegrationDiagnostics(instance)
-  }
-
-  async function forceIntegrationPoll() {
-    if (!monitorIntegration) return
-    setMonitorLoading(true)
-    try {
-      const res = await fetch(`/api/admin/integrations/${monitorIntegration.id}/poll`, { method: 'POST', headers })
-      const data = await res.json()
-      if (!data.success) {
-        alert(data.error || 'No se pudo forzar el pull')
-      }
-      await refreshIntegrationDiagnostics(monitorIntegration)
-    } catch (e) {
-      console.error('Failed to force integration poll:', e)
-    } finally {
-      setMonitorLoading(false)
-    }
   }
 
   const planColors: Record<string, string> = {
@@ -901,63 +645,6 @@ export default function AdminPage() {
     return roleLabels[role] || role
   }
 
-  function sourceLabel(source: string) {
-    const labels: Record<string, string> = {
-      webhook: 'Webhook',
-      events_poller: 'Pull',
-      push: 'Push',
-      reconcile: 'Reconcile',
-    }
-    return labels[source] || source
-  }
-
-  function sourceClass(source: string) {
-    const classes: Record<string, string> = {
-      webhook: 'bg-cyan-100 text-cyan-700',
-      events_poller: 'bg-emerald-100 text-emerald-700',
-      push: 'bg-indigo-100 text-indigo-700',
-      reconcile: 'bg-amber-100 text-amber-700',
-    }
-    return classes[source] || 'bg-slate-100 text-slate-700'
-  }
-
-  function statusClass(level?: string, status?: string) {
-    if (level === 'error' || status === 'error' || status === 'failed') return 'bg-red-100 text-red-700'
-    if (status === 'skipped' || status === 'no_changes') return 'bg-slate-100 text-slate-600'
-    if (status === 'pushed' || status === 'updated' || status === 'fixed') return 'bg-emerald-100 text-emerald-700'
-    return 'bg-slate-100 text-slate-700'
-  }
-
-  function formatDateTime(value?: string) {
-    if (!value) return 'Sin datos'
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return value
-    return date.toLocaleString('es-PE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-  }
-
-  function detailAccounts(details?: Record<string, unknown>) {
-    const affected = details?.affected_accounts
-    const accountsDetail = details?.accounts
-    const source = Array.isArray(affected) ? affected : Array.isArray(accountsDetail) ? accountsDetail : []
-    return source.slice(0, 8).map(item => {
-      if (typeof item === 'string') return item
-      if (item && typeof item === 'object') {
-        const data = item as Record<string, unknown>
-        return String(data.name || data.id || '')
-      }
-      return ''
-    }).filter(Boolean)
-  }
-
-  const purgeTables = purgeSummary?.tables as Record<string, number | null> | undefined
-  const purgeStorageObjects = Number(purgeSummary?.storage_objects || 0)
-  const purgeRecordCount = purgeTables
-    ? Object.values(purgeTables).reduce<number>((sum, value) => sum + (typeof value === 'number' ? value : 0), 0)
-    : 0
-  const monitorEntries = integrationMonitor?.entries || []
-  const monitorStats = integrationMonitor?.stats || {}
-  const outboxTotals = integrationOutbox?.totals || integrationHealth?.outbox || { total: 0, pending: 0, processing: 0, errored: 0, retried: 0 }
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full bg-slate-900">
@@ -1008,15 +695,6 @@ export default function AdminPage() {
           <Lock className="w-4 h-4" /> Roles
           <span className="ml-1 bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 text-xs">{roles.length}</span>
         </button>
-        <button
-          onClick={() => { setTab('integrations'); setSearch('') }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            tab === 'integrations' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Plug className="w-4 h-4" /> Integraciones
-          <span className="ml-1 bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 text-xs">{integrations.length}</span>
-        </button>
       </div>
 
       {/* Search & Actions */}
@@ -1025,7 +703,7 @@ export default function AdminPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
-            placeholder={tab === 'accounts' ? 'Buscar cuentas...' : tab === 'users' ? 'Buscar usuarios...' : tab === 'roles' ? 'Buscar roles...' : 'Buscar integraciones...'}
+            placeholder={tab === 'accounts' ? 'Buscar cuentas...' : tab === 'users' ? 'Buscar usuarios...' : 'Buscar roles...'}
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500 focus:border-transparent"
@@ -1050,22 +728,7 @@ export default function AdminPage() {
           </select>
         )}
 
-        {tab === 'integrations' ? (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={reloadIntegrations}
-              className="flex items-center gap-2 px-3 py-2 bg-slate-700 text-slate-100 rounded-lg hover:bg-slate-600 transition-colors text-sm font-medium whitespace-nowrap"
-            >
-              <RefreshCw className="w-4 h-4" /> Recargar
-            </button>
-            <button
-              onClick={openCreateIntegration}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors text-sm font-medium whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4" /> Nueva Integración
-            </button>
-          </div>
-        ) : tab !== 'roles' ? (
+        {tab !== 'roles' ? (
           <button
             onClick={tab === 'accounts' ? openCreateAccount : openCreateUser}
             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium whitespace-nowrap"
@@ -1097,13 +760,12 @@ export default function AdminPage() {
                 <th className="text-center px-4 py-3 font-medium text-gray-500">Chats</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-500">Espacio</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-500">Estado</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-500">MCP</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-500">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {filteredAccounts.length === 0 ? (
-                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-400">No se encontraron cuentas</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">No se encontraron cuentas</td></tr>
               ) : filteredAccounts.map(a => (
                 <tr key={a.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
@@ -1134,12 +796,6 @@ export default function AdminPage() {
                   <td className="px-4 py-3 text-center">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${a.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                       {a.is_active ? 'Activa' : 'Inactiva'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${a.mcp_enabled ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-400'}`}>
-                      <Bot className="w-3 h-3" />
-                      {a.mcp_enabled ? 'Sí' : 'No'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -1285,248 +941,9 @@ export default function AdminPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 sticky top-0">
-              <tr>
-                <th className="text-left px-4 py-3 font-medium text-gray-500">Integración</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500">Licencia</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-500">Cuentas</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-500">Credenciales</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-500">Estado</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-500">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filteredIntegrations.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No se encontraron integraciones</td></tr>
-              ) : filteredIntegrations.map(instance => (
-                <tr key={instance.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900 flex items-center gap-2">
-                      <Plug className="w-4 h-4 text-emerald-600" />
-                      {instance.name}
-                    </div>
-                    <div className="text-xs text-gray-400">{instance.provider} · {instance.scope}</div>
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">
-                    {instance.subdomain ? `${instance.subdomain}.kommo.com` : 'Sin subdominio'}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-                      {(instance.accounts || []).filter(a => a.enabled).length} cuentas
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${instance.has_access_token ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                      {instance.has_access_token ? <CheckCircle2 className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
-                      Token
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${instance.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                      {instance.is_active ? 'Activa' : 'Inactiva'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => openIntegrationDiagnostics(instance)} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded" title="Monitor">
-                        <Activity className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => openEditIntegration(instance)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Editar">
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => deleteIntegration(instance.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded" title="Eliminar">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+	          </table>
+	        ) : null}
       </div>
-
-      {/* Integration Monitor Modal */}
-      {showIntegrationMonitor && monitorIntegration && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col">
-            <div className="p-5 border-b border-gray-200 flex items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 text-xs font-medium text-emerald-700 mb-1">
-                  <Activity className="w-4 h-4" /> Monitor Kommo
-                </div>
-                <h2 className="text-lg font-semibold text-gray-900">{monitorIntegration.name}</h2>
-                <p className="text-sm text-gray-500 mt-1">
-                  {monitorIntegration.subdomain ? `${monitorIntegration.subdomain}.kommo.com` : 'Sin subdominio'} · {integrationHealth?.assigned_count ?? monitorIntegration.accounts?.filter(a => a.enabled).length ?? 0} cuentas asignadas
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => refreshIntegrationDiagnostics()}
-                  disabled={monitorLoading}
-                  className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 disabled:opacity-60"
-                >
-                  <RefreshCw className={`w-4 h-4 ${monitorLoading ? 'animate-spin' : ''}`} /> Actualizar
-                </button>
-                <button
-                  onClick={forceIntegrationPoll}
-                  disabled={monitorLoading || !integrationHealth?.runtime_running}
-                  className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  <Send className="w-4 h-4" /> Forzar pull
-                </button>
-                <button onClick={() => setShowIntegrationMonitor(false)} className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-5 overflow-auto space-y-5">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <div className="rounded-lg border border-gray-200 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-500">Runtime</span>
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${integrationHealth?.runtime_running ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                      {integrationHealth?.runtime_running ? 'Activo' : 'Inactivo'}
-                    </span>
-                  </div>
-                  <div className="text-2xl font-semibold text-gray-900">{integrationHealth?.worker?.active_accounts ?? 0}</div>
-                  <div className="text-xs text-gray-400 mt-1">cuentas en sync</div>
-                </div>
-                <div className="rounded-lg border border-gray-200 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-500">Webhook</span>
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${integrationHealth?.webhook_configured ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                      {integrationHealth?.webhook_configured ? 'Configurado' : 'Pendiente'}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-600 truncate" title={integrationHealth?.webhook_url || ''}>{integrationHealth?.webhook_url || 'Sin URL'}</div>
-                  <div className="text-xs text-gray-400 mt-2">Public URL: {integrationHealth?.public_url_configured ? 'sí' : 'no'}</div>
-                </div>
-                <div className="rounded-lg border border-gray-200 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-500">Outbox</span>
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${outboxTotals.errored > 0 ? 'bg-red-100 text-red-700' : outboxTotals.pending > 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                      {outboxTotals.total} items
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                    <div><div className="text-lg font-semibold text-amber-600">{outboxTotals.pending}</div><div className="text-gray-400">pend.</div></div>
-                    <div><div className="text-lg font-semibold text-blue-600">{outboxTotals.processing}</div><div className="text-gray-400">proc.</div></div>
-                    <div><div className="text-lg font-semibold text-red-600">{outboxTotals.errored}</div><div className="text-gray-400">err.</div></div>
-                  </div>
-                </div>
-                <div className="rounded-lg border border-gray-200 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-500">Pull</span>
-                    <Clock className="w-4 h-4 text-gray-400" />
-                  </div>
-                  <div className="text-sm font-medium text-gray-900">{formatDateTime(integrationHealth?.events_poller?.last_poll_at)}</div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    {integrationHealth?.events_poller?.last_poll_events_found ?? 0} eventos · {integrationHealth?.events_poller?.last_poll_leads_synced ?? 0} leads
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-                <div className="xl:col-span-2 rounded-lg border border-gray-200 overflow-hidden">
-                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-gray-900">Timeline</h3>
-                    <span className="text-xs text-gray-400">{monitorEntries.length} eventos recientes</span>
-                  </div>
-                  <div className="divide-y divide-gray-100 max-h-[420px] overflow-auto">
-                    {monitorLoading && monitorEntries.length === 0 ? (
-                      <div className="p-8 text-center text-sm text-gray-400">Cargando monitor...</div>
-                    ) : monitorEntries.length === 0 ? (
-                      <div className="p-8 text-center text-sm text-gray-400">Sin eventos recientes</div>
-                    ) : monitorEntries.map(entry => {
-                      const accountsDetail = detailAccounts(entry.details)
-                      return (
-                        <div key={entry.id} className="p-4 hover:bg-gray-50">
-                          <div className="flex flex-wrap items-center gap-2 mb-2">
-                            <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${sourceClass(entry.source)}`}>{sourceLabel(entry.source)}</span>
-                            <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusClass(entry.level, entry.status)}`}>{entry.status || entry.level}</span>
-                            {entry.operation && <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600">{entry.operation}</span>}
-                            {entry.account_name && <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700">{entry.account_name}</span>}
-                            <span className="ml-auto text-xs text-gray-400">{formatDateTime(entry.time)}</span>
-                          </div>
-                          <p className="text-sm text-gray-800">{entry.message}</p>
-                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
-                            {entry.direction && <span>{entry.direction}</span>}
-                            {entry.entity_type && <span>{entry.entity_type}{entry.kommo_entity_id ? ` #${entry.kommo_entity_id}` : ''}</span>}
-                            {entry.batch_size ? <span>{entry.batch_size} items</span> : null}
-                            {entry.request_count ? <span>{entry.request_count} req.</span> : null}
-                            {entry.duration_ms ? <span>{entry.duration_ms} ms</span> : null}
-                          </div>
-                          {accountsDetail.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {accountsDetail.map(accountName => (
-                                <span key={accountName} className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600">{accountName}</span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-
-                <div className="space-y-5">
-                  <div className="rounded-lg border border-gray-200 overflow-hidden">
-                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
-                      <h3 className="text-sm font-semibold text-gray-900">Canales</h3>
-                    </div>
-                    <div className="divide-y divide-gray-100">
-                      {['webhook', 'events_poller', 'push', 'reconcile'].map(source => {
-                        const stat = monitorStats[source]
-                        return (
-                          <div key={source} className="p-4">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${sourceClass(source)}`}>{sourceLabel(source)}</span>
-                              <span className="text-sm font-semibold text-gray-900">{stat?.count || 0}</span>
-                            </div>
-                            <div className="text-xs text-gray-400 mt-2">{formatDateTime(stat?.last_at)}</div>
-                            {stat?.last_msg && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{stat.last_msg}</p>}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-gray-200 overflow-hidden">
-                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-2">
-                      <Eye className="w-4 h-4 text-gray-400" />
-                      <h3 className="text-sm font-semibold text-gray-900">Outbox por operación</h3>
-                    </div>
-                    <div className="divide-y divide-gray-100 max-h-64 overflow-auto">
-                      {(integrationOutbox?.items || []).length === 0 ? (
-                        <div className="p-5 text-sm text-gray-400 text-center">Sin cola pendiente</div>
-                      ) : (integrationOutbox?.items || []).map(item => (
-                        <div key={`${item.operation}-${item.account_id}`} className="p-3 text-sm">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium text-gray-900">{item.operation}</span>
-                            <span className="text-xs text-gray-400">{item.total}</span>
-                          </div>
-                          <div className="text-xs text-gray-500 mt-1">{item.account_name || 'Sin cuenta'}</div>
-                          <div className="flex items-center gap-2 mt-2 text-xs">
-                            <span className="text-amber-600">{item.pending} pend.</span>
-                            <span className="text-blue-600">{item.processing} proc.</span>
-                            <span className="text-red-600">{item.errored} err.</span>
-                          </div>
-                          {item.last_error && <div className="mt-2 text-xs text-red-600 line-clamp-2">{item.last_error}</div>}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Role Modal */}
       {showRoleModal && (
@@ -1713,19 +1130,6 @@ export default function AdminPage() {
                     onChange={e => setAccountForm(f => ({ ...f, current_period_end: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
                   />
-                </div>
-              </div>
-              <div className="flex items-center gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setAccountForm(f => ({ ...f, mcp_enabled: !f.mcp_enabled }))}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${accountForm.mcp_enabled ? 'bg-violet-600' : 'bg-gray-300'}`}
-                >
-                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${accountForm.mcp_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-                </button>
-                <div>
-                  <span className="text-sm font-medium text-gray-700">Acceso MCP</span>
-                  <p className="text-xs text-gray-400">Permitir conexión desde ChatGPT u otros clientes MCP</p>
                 </div>
               </div>
             </div>
@@ -1999,116 +1403,6 @@ export default function AdminPage() {
               <button onClick={() => setShowAssignModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
                 Cerrar
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showIntegrationModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">{editingIntegration ? 'Editar integración Kommo' : 'Nueva integración Kommo'}</h2>
-                <p className="text-sm text-gray-500 mt-1">Una licencia Kommo puede alimentar varias cuentas de Kiri.</p>
-              </div>
-              <button onClick={() => setShowIntegrationModal(false)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-5">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
-                  <input value={integrationForm.name} onChange={e => setIntegrationForm(f => ({ ...f, name: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" placeholder="Kommo Comercial" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Subdominio</label>
-                  <input value={integrationForm.subdomain} onChange={e => setIntegrationForm(f => ({ ...f, subdomain: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" placeholder="miempresa" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Client ID</label>
-                  <input value={integrationForm.client_id} onChange={e => setIntegrationForm(f => ({ ...f, client_id: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Redirect URI</label>
-                  <input value={integrationForm.redirect_uri} onChange={e => setIntegrationForm(f => ({ ...f, redirect_uri: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                    Client Secret
-                    {editingIntegration && (
-                      editingIntegration.has_client_secret
-                        ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Guardado</span>
-                        : <span className="text-xs text-gray-400">(vacío)</span>
-                    )}
-                    {editingIntegration && <span className="ml-auto text-xs text-gray-400 font-normal">dejar vacío para conservar</span>}
-                  </label>
-                  <input type="password" value={integrationForm.client_secret} onChange={e => setIntegrationForm(f => ({ ...f, client_secret: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" placeholder={editingIntegration?.has_client_secret ? '••••••••' : ''} />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                    Access Token
-                    {editingIntegration && (
-                      editingIntegration.has_access_token
-                        ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Guardado</span>
-                        : <span className="text-xs text-gray-400">(vacío)</span>
-                    )}
-                    {editingIntegration && <span className="ml-auto text-xs text-gray-400 font-normal">dejar vacío para conservar</span>}
-                  </label>
-                  <input type="password" value={integrationForm.access_token} onChange={e => setIntegrationForm(f => ({ ...f, access_token: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" placeholder={editingIntegration?.has_access_token ? '••••••••' : ''} />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                    Refresh Token
-                    {editingIntegration && (
-                      editingIntegration.has_refresh_token
-                        ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Guardado</span>
-                        : <span className="text-xs text-gray-400">(opcional)</span>
-                    )}
-                  </label>
-                  <input type="password" value={integrationForm.refresh_token} onChange={e => setIntegrationForm(f => ({ ...f, refresh_token: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" placeholder={editingIntegration?.has_refresh_token ? '••••••••' : ''} />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                    Webhook Secret
-                    {editingIntegration && (
-                      editingIntegration.has_webhook_secret
-                        ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Guardado</span>
-                        : <span className="text-xs text-gray-400">(vacío)</span>
-                    )}
-                    {editingIntegration && <span className="ml-auto text-xs text-gray-400 font-normal">dejar vacío para conservar</span>}
-                  </label>
-                  <input type="password" value={integrationForm.webhook_secret} onChange={e => setIntegrationForm(f => ({ ...f, webhook_secret: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" placeholder={editingIntegration?.has_webhook_secret ? '••••••••' : ''} />
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <button type="button" onClick={() => setIntegrationForm(f => ({ ...f, is_active: !f.is_active }))} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${integrationForm.is_active ? 'bg-emerald-600' : 'bg-gray-300'}`}>
-                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${integrationForm.is_active ? 'translate-x-4' : 'translate-x-1'}`} />
-                </button>
-                <span className="text-sm font-medium text-gray-700">Integración activa</span>
-              </div>
-              <div className="border-t border-gray-200 pt-5">
-                <div className="flex items-center justify-between mb-3">
-                  <label className="block text-sm font-medium text-gray-700">Cuentas conectadas</label>
-                  <span className="text-xs text-gray-400">{selectedIntegrationAccounts.length} seleccionadas</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
-                  {accounts.map(account => {
-                    const active = selectedIntegrationAccounts.includes(account.id)
-                    return (
-                      <button key={account.id} type="button" onClick={() => toggleSelectedIntegrationAccount(account.id)} className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border text-left transition-all ${active ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}>
-                        <span className="text-sm font-medium truncate">{account.name}</span>
-                        {active ? <CheckSquare className="w-4 h-4 text-emerald-600 shrink-0" /> : <Square className="w-4 h-4 text-gray-300 shrink-0" />}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
-              <button onClick={() => setShowIntegrationModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
-              <button onClick={saveIntegration} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">Guardar integración</button>
             </div>
           </div>
         </div>

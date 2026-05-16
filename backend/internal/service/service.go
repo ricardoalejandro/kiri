@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/naperu/kiri/internal/domain"
 	"github.com/naperu/kiri/internal/formula"
-	"github.com/naperu/kiri/internal/kommo"
+	phoneutil "github.com/naperu/kiri/internal/phone"
 	"github.com/naperu/kiri/internal/repository"
 	"github.com/naperu/kiri/internal/whatsapp"
 	"github.com/naperu/kiri/internal/ws"
@@ -37,10 +37,8 @@ type Services struct {
 	Event            *EventService
 	Interaction      *InteractionService
 	QuickReply       *QuickReplyService
-	Program          *ProgramService
 	Role             *RoleService
 	Automation       *AutomationService
-	Survey           *SurveyService
 	Task             *TaskService
 	DocumentTemplate *DocumentTemplateService
 }
@@ -60,10 +58,8 @@ func NewServices(repos *repository.Repositories, pool *whatsapp.DevicePool, hub 
 		Event:            &EventService{repos: repos, hub: hub},
 		Interaction:      &InteractionService{repos: repos, hub: hub},
 		QuickReply:       &QuickReplyService{repos: repos},
-		Program:          NewProgramService(repos),
 		Role:             &RoleService{repos: repos},
 		Automation:       NewAutomationService(repos, pool, hub, nil), // cache injected after Init
-		Survey:           NewSurveyService(repos),
 		Task:             NewTaskService(repos, hub),
 		DocumentTemplate: NewDocumentTemplateService(repos),
 	}
@@ -771,7 +767,7 @@ func (s *ChatService) CreateNewChat(ctx context.Context, accountID, deviceID uui
 	// Normalize phone number to JID
 	jid := phone
 	if !strings.Contains(phone, "@") {
-		phone = kommo.NormalizePhone(phone)
+		phone = phoneutil.Normalize(phone)
 		jid = phone + "@s.whatsapp.net"
 	}
 
@@ -1084,7 +1080,7 @@ func (s *LeadService) ArchiveLead(ctx context.Context, id uuid.UUID, archive boo
 		return err
 	}
 
-	// After archiving, clean up tags and event participants
+	// After archiving, clean up tags.
 	if archive {
 		// Get the contact linked to this lead
 		contactID, err := s.repos.Lead.GetContactIDForLead(ctx, id)
@@ -1093,13 +1089,6 @@ func (s *LeadService) ArchiveLead(ctx context.Context, id uuid.UUID, archive boo
 			if err := s.repos.Tag.RecalculateContactTags(ctx, *contactID); err != nil {
 				log.Printf("[LEAD] Error recalculating contact tags after archive: %v", err)
 			}
-		}
-		// Remove auto-synced event participants for this lead across all events
-		removed, err := s.repos.Event.RemoveAutoSyncParticipantsByLeadID(ctx, id)
-		if err != nil {
-			log.Printf("[LEAD] Error removing event participants after archive: %v", err)
-		} else if removed > 0 {
-			log.Printf("[LEAD] Removed %d auto-sync event participants for archived lead %s", removed, id)
 		}
 	}
 	return nil
@@ -1110,7 +1099,7 @@ func (s *LeadService) ArchiveLeadsBatch(ctx context.Context, ids []uuid.UUID, ar
 		return err
 	}
 
-	// After batch archive, clean up tags and event participants
+	// After batch archive, clean up tags.
 	if archive {
 		for _, id := range ids {
 			contactID, err := s.repos.Lead.GetContactIDForLead(ctx, id)
@@ -1118,11 +1107,6 @@ func (s *LeadService) ArchiveLeadsBatch(ctx context.Context, ids []uuid.UUID, ar
 				if err := s.repos.Tag.RecalculateContactTags(ctx, *contactID); err != nil {
 					log.Printf("[LEAD] Error recalculating contact tags after batch archive: %v", err)
 				}
-			}
-			if removed, err := s.repos.Event.RemoveAutoSyncParticipantsByLeadID(ctx, id); err != nil {
-				log.Printf("[LEAD] Error removing event participants after batch archive: %v", err)
-			} else if removed > 0 {
-				log.Printf("[LEAD] Removed %d auto-sync event participants for archived lead %s", removed, id)
 			}
 		}
 	}
@@ -2237,7 +2221,7 @@ func (s *EventService) tryRemoveLeadFromAdvancedEvent(ctx context.Context, ev *d
 
 // InteractionService handles interaction operations
 // ReconcileAllAccountEvents reconciles participants for ALL active events in an account.
-// Called after bulk tag changes (Kommo sync, CSV import, tag deletion).
+// Called after bulk tag changes (CRM sync, CSV import, tag deletion).
 func (s *EventService) ReconcileAllAccountEvents(ctx context.Context, accountID uuid.UUID) {
 	eventsWithTags, err := s.repos.Event.GetActiveEventsWithTags(ctx)
 	if err != nil {

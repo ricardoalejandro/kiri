@@ -609,32 +609,6 @@ func Migrate(db *pgxpool.Pool) error {
 		`CREATE INDEX IF NOT EXISTS idx_leads_pipeline ON leads(pipeline_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage_id)`,
 
-		// Kommo CRM integration
-		`ALTER TABLE leads ADD COLUMN IF NOT EXISTS kommo_id BIGINT`,
-		`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS kommo_id BIGINT`,
-		`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS kommo_id BIGINT`,
-		`ALTER TABLE pipeline_stages ADD COLUMN IF NOT EXISTS kommo_id BIGINT`,
-		`ALTER TABLE tags ADD COLUMN IF NOT EXISTS kommo_id BIGINT`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_kommo_id ON leads(account_id, kommo_id) WHERE kommo_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_kommo_id ON contacts(account_id, kommo_id) WHERE kommo_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipelines_kommo_id ON pipelines(account_id, kommo_id) WHERE kommo_id IS NOT NULL`,
-		`DROP INDEX IF EXISTS idx_pipeline_stages_kommo_id`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_stages_pipeline_kommo_id ON pipeline_stages(pipeline_id, kommo_id) WHERE kommo_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_kommo_id ON tags(account_id, kommo_id) WHERE kommo_id IS NOT NULL`,
-
-		// Kommo connected pipelines (real-time sync tracking)
-		`CREATE TABLE IF NOT EXISTS kommo_connected_pipelines (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-			kommo_pipeline_id BIGINT NOT NULL,
-			pipeline_id UUID REFERENCES pipelines(id) ON DELETE SET NULL,
-			enabled BOOLEAN DEFAULT TRUE,
-			last_synced_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ DEFAULT NOW(),
-			UNIQUE(account_id, kommo_pipeline_id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_kommo_connected_pipelines_account ON kommo_connected_pipelines(account_id)`,
-
 		// Integration framework: global, multi-account and per-account instances.
 		`CREATE TABLE IF NOT EXISTS integration_instances (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -671,18 +645,6 @@ func Migrate(db *pgxpool.Pool) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_integration_instance_accounts_account ON integration_instance_accounts(account_id, enabled)`,
 		`CREATE INDEX IF NOT EXISTS idx_integration_instance_accounts_instance ON integration_instance_accounts(integration_instance_id, enabled)`,
-		`ALTER TABLE kommo_connected_pipelines ADD COLUMN IF NOT EXISTS integration_instance_id UUID REFERENCES integration_instances(id) ON DELETE SET NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_kommo_connected_pipelines_instance ON kommo_connected_pipelines(integration_instance_id) WHERE integration_instance_id IS NOT NULL`,
-		`ALTER TABLE kommo_connected_pipelines DROP CONSTRAINT IF EXISTS kommo_connected_pipelines_account_id_kommo_pipeline_id_key`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_kommo_connected_pipelines_instance_account_pipeline ON kommo_connected_pipelines(COALESCE(integration_instance_id, '00000000-0000-0000-0000-000000000000'::uuid), account_id, kommo_pipeline_id)`,
-
-		// Anti-loop: track last push timestamp to detect echoes from Kommo poller
-		`ALTER TABLE leads ADD COLUMN IF NOT EXISTS kommo_last_pushed_at BIGINT DEFAULT 0`,
-		`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS kommo_last_pushed_at BIGINT DEFAULT 0`,
-
-		// Kommo call slot tracking on interactions (for dedup during sync)
-		`ALTER TABLE interactions ADD COLUMN IF NOT EXISTS kommo_call_slot INT`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_interactions_kommo_call_slot ON interactions(lead_id, kommo_call_slot) WHERE kommo_call_slot IS NOT NULL`,
 
 		// Account settings: default incoming stage for new leads
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS default_incoming_stage_id UUID REFERENCES pipeline_stages(id) ON DELETE SET NULL`,
@@ -738,12 +700,12 @@ func Migrate(db *pgxpool.Pool) error {
 
 		// Seed system roles (idempotent)
 		`INSERT INTO roles (name, description, is_system, permissions) VALUES
-			('Administrador', 'Acceso total a todos los módulos', TRUE, ARRAY['chats','contacts','programs','devices','leads','events','broadcasts','tags','settings','integrations'])
+			('Administrador', 'Acceso total a todos los módulos', TRUE, ARRAY['chats','contacts','devices','leads','broadcasts','tags','settings','integrations','whatsapp_api'])
 		 ON CONFLICT (name) DO NOTHING`,
 		// Ensure existing 'Administrador' role gets the new 'integrations' permission
 		`UPDATE roles SET permissions = array_append(permissions, 'integrations') WHERE name = 'Administrador' AND NOT ('integrations' = ANY(permissions))`,
 		`INSERT INTO roles (name, description, is_system, permissions) VALUES
-			('Supervisor', 'Acceso a chats, leads, contactos y eventos', TRUE, ARRAY['chats','contacts','leads','events','tags'])
+		('Supervisor', 'Acceso a chats, leads, contactos y etiquetas', TRUE, ARRAY['chats','contacts','leads','tags'])
 		 ON CONFLICT (name) DO NOTHING`,
 		`INSERT INTO roles (name, description, is_system, permissions) VALUES
 			('Agente Básico', 'Acceso solo a chats y contactos', TRUE, ARRAY['chats','contacts','tags'])
@@ -839,10 +801,9 @@ func Migrate(db *pgxpool.Pool) error {
 		`CREATE INDEX IF NOT EXISTS idx_event_participants_stage ON event_participants(stage_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_event_participants_lead ON event_participants(lead_id)`,
 
-		// Option 3: allow multiple leads per phone (JID) per account.
-		// Each Kommo lead is unique by kommo_id (partial unique index already exists).
-		// The (account_id, jid) unique constraint is dropped so leads sharing a phone
-		// (e.g. archived + active) can both sync correctly.
+		// Allow multiple leads per phone (JID) per account.
+		// The (account_id, jid) unique constraint is dropped so duplicated phone
+		// histories can coexist when operationally needed.
 		`ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_account_id_jid_key`,
 
 		// Event tag auto-sync: junction table linking events to tags
@@ -908,9 +869,6 @@ func Migrate(db *pgxpool.Pool) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_event_logbook_entries_logbook ON event_logbook_entries(logbook_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_event_logbook_entries_participant ON event_logbook_entries(participant_id)`,
-
-		// MCP access control per account
-		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mcp_enabled BOOLEAN DEFAULT FALSE`,
 
 		// Eros AI conversation persistence
 		`CREATE TABLE IF NOT EXISTS eros_conversations (
@@ -1008,9 +966,6 @@ func Migrate(db *pgxpool.Pool) error {
 		`CREATE INDEX IF NOT EXISTS idx_leads_archived ON leads(account_id) WHERE is_archived = true`,
 		`CREATE INDEX IF NOT EXISTS idx_leads_blocked ON leads(account_id) WHERE is_blocked = true`,
 
-		// Kommo deletion tracking
-		`ALTER TABLE leads ADD COLUMN IF NOT EXISTS kommo_deleted_at TIMESTAMPTZ`,
-
 		// Address field on contacts and leads (must be before data unification)
 		`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS address TEXT`,
 		`ALTER TABLE leads ADD COLUMN IF NOT EXISTS address TEXT`,
@@ -1022,8 +977,6 @@ func Migrate(db *pgxpool.Pool) error {
 		`ALTER TABLE leads ADD COLUMN IF NOT EXISTS distrito VARCHAR(255) DEFAULT ''`,
 		`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ocupacion VARCHAR(255) DEFAULT ''`,
 
-		// Per-account Kommo integration flag
-		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS kommo_enabled BOOLEAN DEFAULT FALSE`,
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS storage_limit_bytes BIGINT NOT NULL DEFAULT 0`,
 
 		// Storage inventory/audit. V1 uses this as a deletion/audit ledger while
@@ -1509,7 +1462,6 @@ func Migrate(db *pgxpool.Pool) error {
 		`ALTER TABLE sync_monitor_entries ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES accounts(id) ON DELETE SET NULL`,
 		`ALTER TABLE sync_monitor_entries ADD COLUMN IF NOT EXISTS entity_type TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sync_monitor_entries ADD COLUMN IF NOT EXISTS entity_id UUID`,
-		`ALTER TABLE sync_monitor_entries ADD COLUMN IF NOT EXISTS kommo_entity_id BIGINT`,
 		`ALTER TABLE sync_monitor_entries ADD COLUMN IF NOT EXISTS operation TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sync_monitor_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sync_monitor_entries ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT ''`,
@@ -1524,11 +1476,6 @@ func Migrate(db *pgxpool.Pool) error {
 		`CREATE INDEX IF NOT EXISTS idx_sync_monitor_account_created ON sync_monitor_entries(account_id, created_at DESC) WHERE account_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_sync_monitor_status_created ON sync_monitor_entries(status, created_at DESC) WHERE status <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sync_monitor_details_gin ON sync_monitor_entries USING GIN(details)`,
-
-		// Three-way merge baseline for tag sync (Kiri ↔ Kommo)
-		`ALTER TABLE leads ADD COLUMN IF NOT EXISTS kommo_synced_tags TEXT[] DEFAULT '{}'`,
-		// Bootstrap: initialize baseline from current tags for existing Kommo-linked leads
-		`UPDATE leads SET kommo_synced_tags = COALESCE(tags, '{}') WHERE kommo_id IS NOT NULL AND (kommo_synced_tags IS NULL OR kommo_synced_tags = '{}')`,
 
 		// ── Event participant personal data fields ─────────────────────
 		`ALTER TABLE event_participants ADD COLUMN IF NOT EXISTS company VARCHAR(255)`,
@@ -1589,28 +1536,6 @@ func Migrate(db *pgxpool.Pool) error {
 		`ALTER TABLE program_participants ADD COLUMN IF NOT EXISTS stage_id UUID REFERENCES event_pipeline_stages(id) ON DELETE SET NULL`,
 		`ALTER TABLE program_participants ADD COLUMN IF NOT EXISTS auto_tag_sync BOOLEAN DEFAULT FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_program_participants_stage ON program_participants(stage_id)`,
-
-		// ─── Kommo Push Outbox: batched, coalesced push worker ─────────────
-		// Enables bulk PATCH to Kommo (up to 250 items/req) with coalescing
-		// by (entity_id, operation) via unique partial index.
-		`CREATE TABLE IF NOT EXISTS kommo_push_outbox (
-			id UUID PRIMARY KEY,
-			integration_instance_id UUID REFERENCES integration_instances(id) ON DELETE SET NULL,
-			account_id UUID NOT NULL,
-			operation TEXT NOT NULL,
-			entity_id UUID NOT NULL,
-			kommo_entity_id BIGINT NOT NULL,
-			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-			enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			processing_started_at TIMESTAMPTZ,
-			attempts INT NOT NULL DEFAULT 0,
-			last_error TEXT
-		)`,
-		`ALTER TABLE kommo_push_outbox ADD COLUMN IF NOT EXISTS integration_instance_id UUID REFERENCES integration_instances(id) ON DELETE SET NULL`,
-		`DROP INDEX IF EXISTS uq_kommo_outbox_pending`,
-		`CREATE INDEX IF NOT EXISTS idx_kommo_outbox_instance_pending ON kommo_push_outbox(integration_instance_id, operation, enqueued_at) WHERE processing_started_at IS NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_kommo_outbox_pending ON kommo_push_outbox(operation, enqueued_at) WHERE processing_started_at IS NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_kommo_outbox_processing ON kommo_push_outbox(processing_started_at) WHERE processing_started_at IS NOT NULL`,
 
 		// ─── WhatsApp Cloud API: safe infrastructure, no paid sends by default ──
 		`ALTER TABLE chats ADD COLUMN IF NOT EXISTS last_inbound_at TIMESTAMPTZ`,
@@ -1783,14 +1708,14 @@ func Migrate(db *pgxpool.Pool) error {
 			updated_at = NOW()`,
 		`INSERT INTO plan_entitlements (plan_code, key, value_json)
 		VALUES
-			('free', 'max_users', '1'::jsonb), ('free', 'max_devices', '1'::jsonb), ('free', 'max_contacts', '500'::jsonb), ('free', 'kommo_sync', 'false'::jsonb), ('free', 'google_contacts', 'false'::jsonb),
-			('trial', 'max_users', '3'::jsonb), ('trial', 'max_devices', '2'::jsonb), ('trial', 'max_contacts', '2000'::jsonb), ('trial', 'kommo_sync', 'true'::jsonb), ('trial', 'google_contacts', 'true'::jsonb),
-			('basic', 'max_users', '3'::jsonb), ('basic', 'max_devices', '2'::jsonb), ('basic', 'max_contacts', '5000'::jsonb), ('basic', 'kommo_sync', 'true'::jsonb), ('basic', 'google_contacts', 'true'::jsonb),
-			('starter', 'max_users', '5'::jsonb), ('starter', 'max_devices', '3'::jsonb), ('starter', 'max_contacts', '10000'::jsonb), ('starter', 'kommo_sync', 'true'::jsonb), ('starter', 'google_contacts', 'true'::jsonb),
-			('pro', 'max_users', '12'::jsonb), ('pro', 'max_devices', '8'::jsonb), ('pro', 'max_contacts', '50000'::jsonb), ('pro', 'kommo_sync', 'true'::jsonb), ('pro', 'google_contacts', 'true'::jsonb), ('pro', 'broadcasts', 'true'::jsonb),
-			('business', 'max_users', '30'::jsonb), ('business', 'max_devices', '20'::jsonb), ('business', 'max_contacts', '150000'::jsonb), ('business', 'kommo_sync', 'true'::jsonb), ('business', 'google_contacts', 'true'::jsonb), ('business', 'broadcasts', 'true'::jsonb), ('business', 'automations', 'true'::jsonb),
-			('enterprise', 'max_users', '250'::jsonb), ('enterprise', 'max_devices', '100'::jsonb), ('enterprise', 'max_contacts', '1000000'::jsonb), ('enterprise', 'kommo_sync', 'true'::jsonb), ('enterprise', 'google_contacts', 'true'::jsonb), ('enterprise', 'broadcasts', 'true'::jsonb), ('enterprise', 'automations', 'true'::jsonb), ('enterprise', 'priority_support', 'true'::jsonb),
-			('internal', 'max_users', '1000'::jsonb), ('internal', 'max_devices', '1000'::jsonb), ('internal', 'max_contacts', '10000000'::jsonb), ('internal', 'kommo_sync', 'true'::jsonb), ('internal', 'google_contacts', 'true'::jsonb), ('internal', 'broadcasts', 'true'::jsonb), ('internal', 'automations', 'true'::jsonb)
+			('free', 'max_users', '1'::jsonb), ('free', 'max_devices', '1'::jsonb), ('free', 'max_contacts', '500'::jsonb), ('free', 'google_contacts', 'false'::jsonb),
+			('trial', 'max_users', '3'::jsonb), ('trial', 'max_devices', '2'::jsonb), ('trial', 'max_contacts', '2000'::jsonb), ('trial', 'google_contacts', 'true'::jsonb),
+			('basic', 'max_users', '3'::jsonb), ('basic', 'max_devices', '2'::jsonb), ('basic', 'max_contacts', '5000'::jsonb), ('basic', 'google_contacts', 'true'::jsonb),
+			('starter', 'max_users', '5'::jsonb), ('starter', 'max_devices', '3'::jsonb), ('starter', 'max_contacts', '10000'::jsonb), ('starter', 'google_contacts', 'true'::jsonb),
+			('pro', 'max_users', '12'::jsonb), ('pro', 'max_devices', '8'::jsonb), ('pro', 'max_contacts', '50000'::jsonb), ('pro', 'google_contacts', 'true'::jsonb), ('pro', 'broadcasts', 'true'::jsonb),
+			('business', 'max_users', '30'::jsonb), ('business', 'max_devices', '20'::jsonb), ('business', 'max_contacts', '150000'::jsonb), ('business', 'google_contacts', 'true'::jsonb), ('business', 'broadcasts', 'true'::jsonb), ('business', 'automations', 'true'::jsonb),
+			('enterprise', 'max_users', '250'::jsonb), ('enterprise', 'max_devices', '100'::jsonb), ('enterprise', 'max_contacts', '1000000'::jsonb), ('enterprise', 'google_contacts', 'true'::jsonb), ('enterprise', 'broadcasts', 'true'::jsonb), ('enterprise', 'automations', 'true'::jsonb), ('enterprise', 'priority_support', 'true'::jsonb),
+			('internal', 'max_users', '1000'::jsonb), ('internal', 'max_devices', '1000'::jsonb), ('internal', 'max_contacts', '10000000'::jsonb), ('internal', 'google_contacts', 'true'::jsonb), ('internal', 'broadcasts', 'true'::jsonb), ('internal', 'automations', 'true'::jsonb)
 		ON CONFLICT (plan_code, key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = NOW()`,
 		`INSERT INTO subscriptions (account_id, plan_code, status, current_period_start, current_period_end, metadata)
 		SELECT
@@ -1813,6 +1738,77 @@ func Migrate(db *pgxpool.Pool) error {
 		}
 	}
 
+	if err := removeRetiredKiriFeatures(ctx, db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func removeRetiredKiriFeatures(ctx context.Context, db *pgxpool.Pool) error {
+	cleanup := []string{
+		`DROP TABLE IF EXISTS kommo_push_outbox CASCADE`,
+		`DROP TABLE IF EXISTS kommo_connected_pipelines CASCADE`,
+		`DROP TABLE IF EXISTS integration_instance_accounts CASCADE`,
+		`DROP TABLE IF EXISTS integration_instances CASCADE`,
+		`DROP TABLE IF EXISTS dynamic_link_extra_media CASCADE`,
+		`DROP TABLE IF EXISTS dynamic_link_registrations CASCADE`,
+		`DROP TABLE IF EXISTS dynamic_item_options CASCADE`,
+		`DROP TABLE IF EXISTS dynamic_whatsapp_queue CASCADE`,
+		`DROP TABLE IF EXISTS dynamic_links CASCADE`,
+		`DROP TABLE IF EXISTS dynamic_options CASCADE`,
+		`DROP TABLE IF EXISTS dynamic_items CASCADE`,
+		`DROP TABLE IF EXISTS dynamics CASCADE`,
+		`DROP TABLE IF EXISTS survey_answers CASCADE`,
+		`DROP TABLE IF EXISTS survey_responses CASCADE`,
+		`DROP TABLE IF EXISTS survey_questions CASCADE`,
+		`DROP TABLE IF EXISTS surveys CASCADE`,
+		`DROP TABLE IF EXISTS program_attendance CASCADE`,
+		`DROP TABLE IF EXISTS program_sessions CASCADE`,
+		`DROP TABLE IF EXISTS program_participants CASCADE`,
+		`DROP TABLE IF EXISTS program_folders CASCADE`,
+		`DROP TABLE IF EXISTS programs CASCADE`,
+		`DROP TABLE IF EXISTS event_logbook_entries CASCADE`,
+		`DROP TABLE IF EXISTS event_logbooks CASCADE`,
+		`DROP TABLE IF EXISTS event_tags CASCADE`,
+		`DROP TABLE IF EXISTS event_pipeline_stages CASCADE`,
+		`DROP TABLE IF EXISTS event_pipelines CASCADE`,
+		`DROP TABLE IF EXISTS event_participants CASCADE`,
+		`DROP TABLE IF EXISTS event_folders CASCADE`,
+		`DROP TABLE IF EXISTS events CASCADE`,
+		`DROP TABLE IF EXISTS api_keys CASCADE`,
+		`DROP INDEX IF EXISTS idx_leads_kommo_id`,
+		`DROP INDEX IF EXISTS idx_contacts_kommo_id`,
+		`DROP INDEX IF EXISTS idx_pipelines_kommo_id`,
+		`DROP INDEX IF EXISTS idx_pipeline_stages_kommo_id`,
+		`DROP INDEX IF EXISTS idx_pipeline_stages_pipeline_kommo_id`,
+		`DROP INDEX IF EXISTS idx_tags_kommo_id`,
+		`DROP INDEX IF EXISTS idx_interactions_kommo_call_slot`,
+		`DROP INDEX IF EXISTS idx_sync_monitor_entries_account_provider_status`,
+		`ALTER TABLE accounts DROP COLUMN IF EXISTS mcp_enabled`,
+		`ALTER TABLE accounts DROP COLUMN IF EXISTS kommo_enabled`,
+		`ALTER TABLE leads DROP COLUMN IF EXISTS kommo_id`,
+		`ALTER TABLE leads DROP COLUMN IF EXISTS kommo_deleted_at`,
+		`ALTER TABLE leads DROP COLUMN IF EXISTS kommo_last_pushed_at`,
+		`ALTER TABLE leads DROP COLUMN IF EXISTS kommo_synced_tags`,
+		`ALTER TABLE contacts DROP COLUMN IF EXISTS kommo_id`,
+		`ALTER TABLE contacts DROP COLUMN IF EXISTS kommo_last_pushed_at`,
+		`ALTER TABLE pipelines DROP COLUMN IF EXISTS kommo_id`,
+		`ALTER TABLE pipeline_stages DROP COLUMN IF EXISTS kommo_id`,
+		`ALTER TABLE tags DROP COLUMN IF EXISTS kommo_id`,
+		`ALTER TABLE interactions DROP COLUMN IF EXISTS kommo_call_slot`,
+		`ALTER TABLE sync_monitor_entries DROP COLUMN IF EXISTS integration_instance_id`,
+		`ALTER TABLE sync_monitor_entries DROP COLUMN IF EXISTS kommo_entity_id`,
+		`DELETE FROM plan_entitlements WHERE key = 'kommo_sync'`,
+		`UPDATE roles SET permissions = array_remove(array_remove(array_remove(array_remove(permissions, 'programs'), 'events'), 'surveys'), 'dynamics')`,
+		`UPDATE roles SET permissions = array_append(permissions, 'whatsapp_api') WHERE name = 'Administrador' AND NOT ('whatsapp_api' = ANY(permissions))`,
+	}
+
+	for _, stmt := range cleanup {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("retired feature cleanup failed: %w\nSQL: %s", err, stmt)
+		}
+	}
 	return nil
 }
 
@@ -1913,24 +1909,6 @@ func SeedAdmin(db *pgxpool.Pool, cfg *config.Config) error {
 			WHERE account_id = $3 AND pipeline_id IS NULL
 		`, pipelineID, firstStageID, accountID)
 	}
-
-	// ─── API Keys table for MCP / external integrations ───
-	_, _ = db.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS api_keys (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-			name TEXT NOT NULL DEFAULT '',
-			key_hash TEXT NOT NULL,
-			key_prefix TEXT NOT NULL DEFAULT '',
-			permissions TEXT NOT NULL DEFAULT 'read',
-			is_active BOOLEAN NOT NULL DEFAULT true,
-			last_used_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)
-	`)
-	_, _ = db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_api_keys_account_id ON api_keys(account_id)`)
-	_, _ = db.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash)`)
 
 	// ─── Automations ──────────────────────────────────────────────────────────
 	_, _ = db.Exec(ctx, `
@@ -2190,161 +2168,5 @@ func MigrateEventPipelines(db *pgxpool.Pool) error {
 	// ── Task Lists ──
 	// (Moved to Migrate function)
 
-	return nil
-}
-
-// SeedTemplateSurveys ensures all accounts have the 3 template surveys.
-// Safe to call on every startup — idempotent via slug checks.
-func SeedTemplateSurveys(db *pgxpool.Pool) error {
-	ctx := context.Background()
-
-	rows, err := db.Query(ctx, `SELECT id FROM accounts`)
-	if err != nil {
-		return fmt.Errorf("[SEED] failed to list accounts: %w", err)
-	}
-	defer rows.Close()
-
-	var accountIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		accountIDs = append(accountIDs, id)
-	}
-
-	for _, accountID := range accountIDs {
-		if err := seedTemplateSurveysForAccount(ctx, db, accountID); err != nil {
-			log.Printf("[SEED] Warning: failed to seed templates for account %s: %v", accountID, err)
-		}
-	}
-	return nil
-}
-
-// SeedTemplateSurveysForAccount seeds the 3 template surveys for a single account.
-func SeedTemplateSurveysForAccount(db *pgxpool.Pool, accountID string) error {
-	return seedTemplateSurveysForAccount(context.Background(), db, accountID)
-}
-
-func seedTemplateSurveysForAccount(ctx context.Context, db *pgxpool.Pool, accountID string) error {
-	short := accountID[:8]
-
-	type tplQuestion struct {
-		orderIdx int
-		qtype    string
-		title    string
-		desc     string
-		required bool
-		config   string
-	}
-	type tplSurvey struct {
-		slugSuffix  string
-		name        string
-		description string
-		welcomeT    string
-		welcomeD    string
-		thankT      string
-		thankM      string
-		branding    string
-		questions   []tplQuestion
-	}
-
-	templates := []tplSurvey{
-		{
-			slugSuffix:  "motivaciones",
-			name:        "Motivaciones para Estudiar en Nueva Acrópolis",
-			description: "Descubre qué inspira a nuestros estudiantes a iniciar y continuar su camino en la filosofía práctica.",
-			welcomeT:    "¿Qué te inspiró a estudiar filosofía?",
-			welcomeD:    "Queremos conocer tu historia. Esta breve encuesta nos ayuda a entender qué te motivó a dar el primer paso y qué te impulsa a seguir creciendo con nosotros.",
-			thankT:      "¡Gracias por compartir tu experiencia!",
-			thankM:      "Tu historia nos inspira a seguir creando espacios de crecimiento. Cada respuesta nos ayuda a mejorar y llegar a más personas que buscan lo mismo que tú encontraste aquí.",
-			branding:    `{"bg_color":"#0f172a","accent_color":"#f59e0b","font_family":"Playfair Display","title_size":"lg","text_color":"#f8fafc","button_style":"pill","bg_overlay":"0","question_align":"center"}`,
-			questions: []tplQuestion{
-				{0, "single_choice", "¿Cómo conociste Nueva Acrópolis?", "Selecciona la opción que mejor describa cómo llegaste a nosotros.", true, `{"options":["Recomendación de un amigo o familiar","Redes sociales (Facebook, Instagram, TikTok)","Búsqueda en internet","Pasé por la sede y me llamó la atención","Un evento o charla abierta","Publicidad (volantes, afiches, anuncios)","Otro"]}`},
-				{1, "multiple_choice", "¿Qué te motivó a inscribirte por primera vez?", "Puedes seleccionar más de una opción.", true, `{"options":["Interés por la filosofía y el autoconocimiento","Buscar un propósito o sentido de vida","Desarrollar habilidades de liderazgo","Conocer personas con intereses similares","Superar una etapa difícil en mi vida","Curiosidad por las culturas antiguas","Crecimiento personal y espiritual","El voluntariado y la acción social"]}`},
-				{2, "likert", "¿Qué tan importante fue cada factor en tu decisión de inscribirte?", "Valora del 1 (nada importante) al 5 (muy importante).", true, `{"likert_scale":5,"likert_min":"Nada importante","likert_max":"Muy importante"}`},
-				{3, "single_choice", "¿Cuánto tiempo llevas estudiando en Nueva Acrópolis?", "", true, `{"options":["Menos de 3 meses","3 a 6 meses","6 meses a 1 año","1 a 2 años","2 a 5 años","Más de 5 años"]}`},
-				{4, "multiple_choice", "¿Qué es lo que más valoras de tu experiencia en Nueva Acrópolis?", "Selecciona todas las que apliquen.", true, `{"options":["Las enseñanzas filosóficas y su aplicación práctica","La comunidad y los lazos de amistad","Las actividades de voluntariado","El desarrollo de disciplina y constancia","Los retiros y actividades especiales","Los profesores y mentores","El ambiente de respeto y crecimiento","Las artes marciales o actividades físicas"]}`},
-				{5, "rating", "¿Qué tan probable es que recomiendes Nueva Acrópolis a un amigo o familiar?", `Donde 1 es "Nada probable" y 10 es "Totalmente probable".`, true, `{"max_rating":10}`},
-				{6, "single_choice", "¿Qué te impulsa a continuar estudiando?", "", true, `{"options":["Siento que sigo creciendo como persona","La comunidad se ha vuelto parte de mi vida","Quiero profundizar más en las enseñanzas","Me motiva contribuir al mundo a través del voluntariado","Encuentro respuestas a mis preguntas de vida","El compromiso con mi propio desarrollo"]}`},
-				{7, "long_text", "¿Hay alguna experiencia o momento en Nueva Acrópolis que haya sido especialmente significativo para ti?", "Comparte libremente. Tu historia puede inspirar a otros.", false, `{"placeholder":"Cuéntanos ese momento que marcó la diferencia..."}`},
-			},
-		},
-		{
-			slugSuffix:  "perfil",
-			name:        "Conoce a Nuestros Estudiantes",
-			description: "Perfil de intereses, edades y preocupaciones de los estudiantes para diseñar mejores programas.",
-			welcomeT:    "Queremos conocerte mejor",
-			welcomeD:    "Ayúdanos a entender quiénes somos como comunidad. Tus respuestas nos permiten crear programas que realmente respondan a lo que necesitas.",
-			thankT:      "¡Tu voz cuenta!",
-			thankM:      "Gracias por tomarte el tiempo de responder. Con esta información diseñaremos experiencias más significativas para ti y para quienes vendrán después.",
-			branding:    `{"bg_color":"#1e293b","accent_color":"#10b981","font_family":"Poppins","title_size":"lg","text_color":"#e2e8f0","button_style":"rounded","bg_overlay":"0","question_align":"center"}`,
-			questions: []tplQuestion{
-				{0, "single_choice", "¿En qué rango de edad te encuentras?", "", true, `{"options":["15 a 20 años","21 a 25 años","26 a 30 años","31 a 40 años","41 a 50 años","51 a 60 años","Más de 60 años"]}`},
-				{1, "single_choice", "¿Cuál es tu ocupación principal?", "", true, `{"options":["Estudiante universitario","Profesional independiente","Empleado en empresa privada","Funcionario público","Emprendedor / empresario","Jubilado / retirado","Ama de casa","Artista / creativo","Otro"]}`},
-				{2, "multiple_choice", "¿Cuáles de estos temas te interesan más?", "Selecciona todos los que despierten tu curiosidad.", true, `{"options":["Filosofía práctica y ética","Psicología y autoconocimiento","Historia de las civilizaciones antiguas","Liderazgo y trabajo en equipo","Meditación y vida interior","Ecología y cuidado del planeta","Arte y expresión creativa","Ciencia y cosmovisión","Oratoria y comunicación","Artes marciales y disciplina corporal"]}`},
-				{3, "multiple_choice", "¿Cuáles son tus principales preocupaciones en la vida actualmente?", "Selecciona hasta 3 opciones que resuenen contigo.", true, `{"options":["Encontrar mi vocación o propósito de vida","Estrés laboral o académico","Relaciones personales y comunicación","Estabilidad económica","Salud física y mental","Sentirme parte de una comunidad con valores","Incertidumbre sobre el futuro","Falta de motivación o inspiración","El estado del mundo y la sociedad","Quiero contribuir más a la sociedad"]}`},
-				{4, "single_choice", "¿Qué buscas principalmente al estudiar en Nueva Acrópolis?", "", true, `{"options":["Herramientas para enfrentar la vida con más claridad","Una comunidad con la que comparta valores","Conocimiento que no encuentro en la educación tradicional","Desarrollar mi carácter y disciplina","Aportar algo al mundo desde el voluntariado","Un espacio de paz y reflexión"]}`},
-				{5, "rating", "¿Qué tan satisfecho estás con tu experiencia hasta ahora?", `Donde 1 es "Nada satisfecho" y 5 es "Muy satisfecho".`, true, `{"max_rating":5}`},
-				{6, "likert", "¿Qué tan de acuerdo estás con la siguiente afirmación?", `"Nueva Acrópolis me ha ayudado a crecer como persona."`, true, `{"likert_scale":5,"likert_min":"Totalmente en desacuerdo","likert_max":"Totalmente de acuerdo"}`},
-				{7, "single_choice", "¿Con qué frecuencia participas en actividades de Nueva Acrópolis?", "", true, `{"options":["Varias veces por semana","Una vez por semana","Cada dos semanas","Una vez al mes","Esporádicamente"]}`},
-				{8, "long_text", "¿Qué programa, taller o actividad te gustaría que ofreciéramos?", "Tus sugerencias son valiosas para nosotros.", false, `{"placeholder":"Comparte tus ideas..."}`},
-			},
-		},
-		{
-			slugSuffix:  "habitos",
-			name:        "Hábitos y Medios de Comunicación",
-			description: "Análisis de consumo de medios y hábitos digitales para optimizar la difusión de nuestras actividades.",
-			welcomeT:    "¿Cómo te conectas con el mundo?",
-			welcomeD:    "Queremos saber cómo consumes información y en qué inviertes tu tiempo libre. Esto nos ayuda a llegar a más personas que, como tú, buscan algo diferente.",
-			thankT:      "¡Gracias por ayudarnos a crecer!",
-			thankM:      "Con tus respuestas podremos llevar nuestro mensaje a más personas que buscan filosofía, crecimiento y comunidad. Eres parte fundamental de este esfuerzo.",
-			branding:    `{"bg_color":"#0c0a09","accent_color":"#8b5cf6","font_family":"Space Grotesk","title_size":"lg","text_color":"#fafaf9","button_style":"pill","bg_overlay":"0","question_align":"center"}`,
-			questions: []tplQuestion{
-				{0, "multiple_choice", "¿Qué redes sociales usas con más frecuencia?", "Selecciona todas las que uses al menos una vez por semana.", true, `{"options":["Instagram","Facebook","TikTok","YouTube","X (Twitter)","LinkedIn","WhatsApp (grupos y canales)","Telegram","Pinterest","Reddit","Ninguna"]}`},
-				{1, "single_choice", "¿Cuántas horas al día pasas en redes sociales?", "", true, `{"options":["Menos de 1 hora","1 a 2 horas","2 a 3 horas","3 a 5 horas","Más de 5 horas"]}`},
-				{2, "multiple_choice", "¿Qué tipo de contenido consumes principalmente en internet?", "Selecciona todos los que apliquen.", true, `{"options":["Noticias y actualidad","Entretenimiento y humor","Desarrollo personal y motivación","Educación y cursos online","Filosofía y espiritualidad","Ciencia y tecnología","Podcasts y entrevistas","Música y arte","Fitness y salud","Viajes y cultura"]}`},
-				{3, "single_choice", "¿Cuál es tu formato de contenido preferido?", "", true, `{"options":["Videos cortos (Reels, TikTok, Shorts)","Videos largos (YouTube, documentales)","Artículos y blogs","Podcasts y audio","Imágenes e infografías","Historias efímeras (Stories)","Transmisiones en vivo"]}`},
-				{4, "multiple_choice", "¿En qué actividades inviertes más tu tiempo libre?", "Selecciona las 3 principales.", true, `{"options":["Navegar redes sociales","Leer libros o artículos","Hacer ejercicio o deporte","Ver series o películas","Estar con familia o amigos","Meditar o actividades introspectivas","Videojuegos","Aprender algo nuevo (cursos, tutoriales)","Voluntariado o actividades comunitarias","Escuchar música o podcasts","Actividades artísticas o creativas"]}`},
-				{5, "single_choice", "¿En qué horario sueles estar más activo en redes sociales?", "", true, `{"options":["Mañana (6am - 12pm)","Tarde (12pm - 6pm)","Noche (6pm - 10pm)","Madrugada (10pm - 6am)","Todo el día por igual"]}`},
-				{6, "single_choice", "¿Cómo prefieres enterarte de eventos y actividades?", "", true, `{"options":["WhatsApp (mensaje directo)","Instagram (publicaciones o historias)","Facebook (eventos o publicaciones)","Correo electrónico","Boca a boca (amigos, familia)","Afiches o volantes físicos","Página web"]}`},
-				{7, "single_choice", "¿Escuchas podcasts regularmente?", "", true, `{"options":["Sí, todos los días","Sí, varias veces por semana","Ocasionalmente (1-2 veces al mes)","Casi nunca","No escucho podcasts"]}`},
-				{8, "rating", "¿Qué tanto influyen las redes sociales en tus decisiones de asistir a eventos o actividades?", `Donde 1 es "No influyen nada" y 5 es "Influyen mucho".`, true, `{"max_rating":5}`},
-				{9, "long_text", "¿Hay algún creador de contenido, canal o podcast sobre filosofía, desarrollo personal o espiritualidad que nos recomiendes?", "Nos encantaría conocer tus referencias favoritas.", false, `{"placeholder":"Comparte aquí tus recomendaciones..."}`},
-			},
-		},
-	}
-
-	for _, tpl := range templates {
-		slug := fmt.Sprintf("tpl-%s-%s", tpl.slugSuffix, short)
-
-		// Check if this template already exists for this account
-		var exists bool
-		_ = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM surveys WHERE slug = $1)`, slug).Scan(&exists)
-		if exists {
-			continue
-		}
-
-		var surveyID string
-		err := db.QueryRow(ctx, `
-			INSERT INTO surveys (account_id, name, description, slug, status, welcome_title, welcome_description, thank_you_title, thank_you_message, branding, is_template)
-			VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9::jsonb, TRUE)
-			RETURNING id
-		`, accountID, tpl.name, tpl.description, slug, tpl.welcomeT, tpl.welcomeD, tpl.thankT, tpl.thankM, tpl.branding).Scan(&surveyID)
-		if err != nil {
-			return fmt.Errorf("failed to insert survey %s: %w", slug, err)
-		}
-
-		for _, q := range tpl.questions {
-			_, err := db.Exec(ctx, `
-				INSERT INTO survey_questions (survey_id, order_index, type, title, description, required, config)
-				VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-			`, surveyID, q.orderIdx, q.qtype, q.title, q.desc, q.required, q.config)
-			if err != nil {
-				return fmt.Errorf("failed to insert question for %s: %w", slug, err)
-			}
-		}
-		log.Printf("[SEED] Created template survey '%s' for account %s", tpl.name, short)
-	}
 	return nil
 }

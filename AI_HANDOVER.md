@@ -2,7 +2,7 @@
 
 ## 1. Project Overview
 
-**Kiri CRM** is a multi-tenant SaaS CRM focused on WhatsApp operations, sales workflows and event/program management. It includes role-based access control, subscriptions, integrations and a Next.js dashboard.
+**Kiri CRM** is a multi-tenant SaaS CRM focused on WhatsApp operations, sales workflows, leads, contacts, tasks, bots and automations. It includes role-based access control, subscriptions, integrations and a Next.js dashboard.
 
 Current implementation notes:
 - WhatsApp Web integration uses **whatsmeow**, not Baileys.
@@ -16,8 +16,8 @@ Current implementation notes:
 - **Backend**: Go 1.24, Fiber, pgx, PostgreSQL, Redis.
 - **Storage**: MinIO/S3-compatible media storage.
 - **Realtime**: WebSocket hub at `/ws`.
-- **Integrations**: Kommo CRM, Google Contacts, WhatsApp Cloud API.
-- **AI/MCP**: Eros assistant endpoints and MCP server support.
+- **Integrations**: Google Contacts and WhatsApp Cloud API.
+- **AI**: Eros assistant endpoints.
 - **Infrastructure**: Docker Compose with PostgreSQL, Redis, MinIO, backend, frontend and Traefik labels for production routing.
 
 ## 3. Product Surface
@@ -25,9 +25,7 @@ Current implementation notes:
 Core areas visible in the current codebase:
 - Chats, WhatsApp devices, messages, media, reactions, polls and quick replies.
 - Contacts, leads, pipelines, tags, campaigns and interaction history.
-- Programs, events, participants, sessions, attendance and logbooks.
 - Tasks, bots, automations and execution logs.
-- Surveys and public dynamic pages/forms.
 - Document templates, generated documents and storage management.
 - SaaS admin for accounts, users, roles, plans, subscriptions and integrations.
 
@@ -41,13 +39,6 @@ make down
 make logs
 make db
 make test
-```
-
-Local development:
-
-```bash
-cd backend && go run ./cmd/server
-cd frontend && npm install && npm run dev
 ```
 
 Production-style rebuild:

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -31,7 +30,7 @@ import (
 	"github.com/naperu/kiri/internal/domain"
 	"github.com/naperu/kiri/internal/formula"
 	googleclient "github.com/naperu/kiri/internal/google"
-	"github.com/naperu/kiri/internal/kommo"
+	phoneutil "github.com/naperu/kiri/internal/phone"
 	"github.com/naperu/kiri/internal/repository"
 	"github.com/naperu/kiri/internal/service"
 	"github.com/naperu/kiri/internal/storage"
@@ -39,7 +38,6 @@ import (
 	"github.com/naperu/kiri/internal/ws"
 	"github.com/naperu/kiri/pkg/cache"
 	"github.com/naperu/kiri/pkg/config"
-	"github.com/naperu/kiri/pkg/database"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -56,15 +54,13 @@ type Server struct {
 	hub          *ws.Hub
 	pool         *whatsapp.DevicePool
 	storage      *storage.Storage
-	kommoSync    *kommo.SyncService
-	kommoManager *kommo.Manager
 	cache        *cache.Cache
 	googleClient *googleclient.Client
 	version      string
 	changelog    string
 }
 
-func NewServer(cfg *config.Config, services *service.Services, repos *repository.Repositories, hub *ws.Hub, pool *whatsapp.DevicePool, store *storage.Storage, kommoSyncSvc *kommo.SyncService, kommoManager *kommo.Manager, c *cache.Cache, gc *googleclient.Client, version string) *Server {
+func NewServer(cfg *config.Config, services *service.Services, repos *repository.Repositories, hub *ws.Hub, pool *whatsapp.DevicePool, store *storage.Storage, c *cache.Cache, gc *googleclient.Client, version string) *Server {
 	app := fiber.New(fiber.Config{
 		AppName:               "Kiri CRM",
 		BodyLimit:             32 * 1024 * 1024, // 32MB max upload
@@ -104,7 +100,7 @@ func NewServer(cfg *config.Config, services *service.Services, repos *repository
 		ContentSecurityPolicy:     "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' wss: https:; font-src 'self' data:; frame-ancestors 'none'",
 	}))
 
-	// Rate Limiting - 500 requests per minute per IP (skip media file serving)
+	// Rate Limiting - 500 requests per minute per IP.
 	app.Use(limiter.New(limiter.Config{
 		Max:        500,
 		Expiration: 1 * time.Minute,
@@ -120,9 +116,7 @@ func NewServer(cfg *config.Config, services *service.Services, repos *repository
 		SkipFailedRequests:     false,
 		SkipSuccessfulRequests: false,
 		Next: func(c *fiber.Ctx) bool {
-			// Skip rate limiting for media file endpoints and websocket
-			path := c.Path()
-			return strings.HasPrefix(path, "/api/media/file/") || strings.HasPrefix(path, "/ws")
+			return strings.HasPrefix(c.Path(), "/ws")
 		},
 	}))
 
@@ -155,13 +149,13 @@ func NewServer(cfg *config.Config, services *service.Services, repos *repository
 		hub:          hub,
 		pool:         pool,
 		storage:      store,
-		kommoSync:    kommoSyncSvc,
-		kommoManager: kommoManager,
 		cache:        c,
 		googleClient: gc,
 		version:      version,
 		changelog:    changelogContent,
 	}
+
+	app.Use(server.validateBrowserOrigin)
 
 	// Version header middleware — adds X-Kiri-Version to all API responses
 	app.Use(func(c *fiber.Ctx) error {
@@ -185,36 +179,6 @@ func NewServer(cfg *config.Config, services *service.Services, repos *repository
 	return server
 }
 
-func (s *Server) kommoForAccount(ctx context.Context, accountID uuid.UUID) *kommo.SyncService {
-	if s.kommoManager != nil {
-		if svc := s.kommoManager.ForAccount(ctx, accountID); svc != nil {
-			return svc
-		}
-	}
-	return s.kommoSync
-}
-
-func (s *Server) kommoForWebhook(secret string) *kommo.SyncService {
-	if s.kommoManager != nil {
-		if svc := s.kommoManager.ForWebhook(secret); svc != nil {
-			return svc
-		}
-	}
-	if s.kommoSync != nil && s.kommoSync.WebhookSecret != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(s.kommoSync.WebhookSecret)) == 1 {
-		return s.kommoSync
-	}
-	return nil
-}
-
-func (s *Server) defaultKommoSync() *kommo.SyncService {
-	if s.kommoManager != nil {
-		if svc := s.kommoManager.Primary(); svc != nil {
-			return svc
-		}
-	}
-	return s.kommoSync
-}
-
 func (s *Server) setupRoutes() {
 	// Health check — deep health probe checking all dependencies
 	s.app.Get("/health", s.handleHealthCheck)
@@ -229,38 +193,24 @@ func (s *Server) setupRoutes() {
 	// Device health endpoint (protected) — detailed per-device metrics
 	// Registered after auth middleware setup below
 
-	// Media proxy - public access for displaying images/videos in chat
-	// MUST be registered before protected group to avoid auth middleware
-	api.Get("/media/file/*", s.handleMediaProxy)
-
-	// Public survey routes (no auth required)
-	api.Get("/public/surveys/:slug", s.handleGetPublicSurvey)
-	api.Post("/public/surveys/:slug/submit", s.handleSubmitSurveyResponse)
-	api.Post("/public/surveys/:slug/upload", s.handleUploadSurveyFile)
-
-	// Public dynamic routes (no auth required)
-	// Order matters: specific paths before the catch-all :slug
-	api.Get("/public/dynamics/check-registration", s.handleCheckRegistration)
-	api.Post("/public/dynamics/send-whatsapp", s.handleSendDynamicWhatsApp)
-	api.Post("/public/dynamics/register", s.handleRegisterOnLink)
-	api.Post("/public/dynamics/share", s.handleShareOnLink)
-	api.Get("/public/dynamics/:slug", s.handleGetPublicDynamic)
-
 	// Auth routes (no auth required)
 	auth := api.Group("/auth")
 	auth.Post("/login", s.handleLogin)
 	auth.Post("/register", s.handleRegister)
 	auth.Post("/refresh", s.handleRefreshToken)
 
-	// Kommo webhook (public — called by Kommo, secret in URL for validation)
-	api.Post("/kommo/webhook/:secret", s.handleKommoWebhook)
-
 	// WhatsApp Cloud API webhook (public — verification token in env, device resolved by phone_number_id)
 	api.Get("/whatsapp/cloud/webhook", s.handleWhatsAppCloudVerify)
 	api.Post("/whatsapp/cloud/webhook", s.handleWhatsAppCloudWebhook)
 
+	// Google OAuth callback is public because Google redirects back without a JWT.
+	api.Get("/google/callback", s.handleGoogleCallback)
+
 	// Protected routes
 	protected := api.Group("", s.authMiddleware)
+
+	// Media proxy - authenticated access for displaying private account media.
+	protected.Get("/media/file/*", s.handleMediaProxy)
 
 	// User routes
 	protected.Get("/me", s.handleGetMe)
@@ -285,16 +235,11 @@ func (s *Server) setupRoutes() {
 	// Account users — any authenticated user can list users in their account (for assignment dropdowns)
 	protected.Get("/account/users", s.handleGetAccountUsers)
 
-	// API Key management routes
-	protected.Post("/settings/api-keys", s.handleCreateAPIKey)
-	protected.Get("/settings/api-keys", s.handleListAPIKeys)
-	protected.Delete("/settings/api-keys/:id", s.handleDeleteAPIKey)
-
 	protected.Use(s.subscriptionAccessMiddleware)
 
 	// Device routes
 	// GET /devices — list available devices for sending; accessible by any authenticated user
-	// (needed by chats, contacts, leads, broadcasts, events, programs pages to populate device pickers)
+	// (needed by chats, contacts, leads and broadcasts pages to populate device pickers)
 	protected.Get("/devices", s.handleGetDevices)
 	// Device management — requires PermDevices (add, edit, delete, connect, disconnect)
 	devices := protected.Group("/devices", s.requirePermission(domain.PermDevices))
@@ -364,7 +309,6 @@ func (s *Server) setupRoutes() {
 	leads.Patch("/:id/status", s.handleUpdateLeadStatus)
 	leads.Patch("/:id/stage", s.handleUpdateLeadStage)
 	leads.Get("/:id/interactions", s.handleGetLeadInteractions)
-	leads.Post("/:id/sync-kommo", s.requirePlanFeature("kommo_sync"), s.handleSyncLeadFromKommo)
 	leads.Patch("/:id/archive", s.handleArchiveLead)
 	leads.Patch("/:id/block", s.handleBlockLead)
 
@@ -396,37 +340,6 @@ func (s *Server) setupRoutes() {
 	campaigns.Post("/", s.handleCreateCampaign)
 	campaigns.Get("/:id", s.handleGetCampaign)
 
-	// Program routes
-	programs := protected.Group("/programs", s.requirePermission(domain.PermPrograms))
-	programs.Get("/", s.handleListPrograms)
-	programs.Post("/", s.handleCreateProgram)
-	// Folder routes — must be declared BEFORE /:id to avoid param collision
-	programs.Get("/folders", s.handleGetProgramFolders)
-	programs.Post("/folders", s.handleCreateProgramFolder)
-	programs.Put("/folders/:fid", s.handleUpdateProgramFolder)
-	programs.Delete("/folders/:fid", s.handleDeleteProgramFolder)
-	programs.Get("/:id", s.handleGetProgram)
-	programs.Put("/:id", s.handleUpdateProgram)
-	programs.Delete("/:id", s.handleDeleteProgram)
-	programs.Patch("/:id/move-folder", s.handleMoveProgramToFolder)
-	programs.Get("/:id/attendance-stats", s.handleGetAttendanceStats)
-
-	programs.Get("/:id/participants", s.handleListParticipants)
-	programs.Post("/:id/participants", s.handleAddParticipant)
-	programs.Delete("/:id/participants/:participantId", s.handleRemoveParticipant)
-	programs.Patch("/:id/participants/:participantId/stage", s.handleUpdateProgramParticipantStage)
-
-	programs.Get("/:id/sessions", s.handleListSessions)
-	programs.Post("/:id/sessions", s.handleCreateSession)
-	programs.Put("/:id/sessions/:sessionId", s.handleUpdateSession)
-	programs.Delete("/:id/sessions/:sessionId", s.handleDeleteSession)
-
-	programs.Get("/:id/sessions/:sessionId/attendance", s.handleGetAttendance)
-	programs.Post("/:id/sessions/:sessionId/attendance", s.handleMarkAttendance)
-	programs.Post("/:id/sessions/:sessionId/attendance/batch", s.handleBatchMarkAttendance)
-	programs.Get("/:id/sessions/:sessionId/attendance/filter", s.handleGetParticipantsByAttendanceStatus)
-	programs.Post("/:id/sessions/generate", s.handleGenerateSessions)
-	programs.Post("/:id/campaign", s.handleCreateCampaignFromProgram)
 	campaigns.Put("/:id", s.handleUpdateCampaign)
 	campaigns.Delete("/:id", s.handleDeleteCampaign)
 	campaigns.Post("/batch-delete", s.handleBatchDeleteCampaigns)
@@ -458,7 +371,6 @@ func (s *Server) setupRoutes() {
 	contacts.Get("/:id/leads", s.handleGetContactLeads)
 	contacts.Put("/:id", s.handleUpdateContact)
 	contacts.Post("/:id/reset", s.handleResetContactFromDevice)
-	contacts.Post("/:id/sync-kommo", s.requirePlanFeature("kommo_sync"), s.handleSyncContactFromKommo)
 	contacts.Delete("/:id", s.handleDeleteContact)
 
 	// Custom field value routes (under contacts, all authenticated users)
@@ -479,62 +391,6 @@ func (s *Server) setupRoutes() {
 
 	// People unified search (contacts + leads)
 	protected.Get("/people/search", s.handleSearchPeople)
-
-	// Event routes
-	events := protected.Group("/events", s.requirePermission(domain.PermEvents))
-	events.Get("/", s.handleGetEvents)
-	events.Post("/", s.handleCreateEvent)
-	events.Post("/from-leads", s.handleCreateEventFromLeads)
-	events.Get("/upcoming-actions", s.handleGetUpcomingActions)
-	// Pipeline routes
-	events.Get("/pipelines", s.handleGetEventPipelines)
-	events.Post("/pipelines", s.handleCreateEventPipeline)
-	events.Get("/pipelines/:pid", s.handleGetEventPipeline)
-	events.Put("/pipelines/:pid", s.handleUpdateEventPipeline)
-	events.Delete("/pipelines/:pid", s.handleDeleteEventPipeline)
-	events.Put("/pipelines/:pid/stages", s.handleReplaceEventPipelineStages)
-	// Folder routes — must be declared BEFORE /:id to avoid param collision
-	events.Get("/folders", s.handleGetEventFolders)
-	events.Post("/folders", s.handleCreateEventFolder)
-	events.Put("/folders/:fid", s.handleUpdateEventFolder)
-	events.Delete("/folders/:fid", s.handleDeleteEventFolder)
-	events.Get("/:id", s.handleGetEvent)
-	events.Put("/:id", s.handleUpdateEvent)
-	events.Delete("/:id", s.handleDeleteEvent)
-	events.Patch("/:id/move-folder", s.handleMoveEventToFolder)
-	// Event tag auto-sync
-	events.Get("/:id/tags", s.handleGetEventTags)
-	events.Put("/:id/tags", s.handleSetEventTags)
-	events.Post("/formula/validate", s.handleValidateFormula)
-	events.Get("/:id/participants/paginated", s.handleGetEventParticipantsPaginated)
-	events.Get("/:id/participants/by-stage/:stageId", s.handleGetEventParticipantsByStage)
-	events.Post("/:id/participants/observations/batch", s.handleBatchParticipantObservations)
-	events.Get("/:id/participants", s.handleGetEventParticipants)
-	events.Post("/:id/participants", s.handleAddEventParticipant)
-	events.Post("/:id/participants/bulk", s.handleBulkAddEventParticipants)
-	events.Patch("/:id/participants/bulk-status", s.handleBulkUpdateEventParticipantStatus)
-	events.Patch("/:id/participants/bulk-stage", s.handleBulkUpdateEventParticipantStage)
-	events.Put("/:id/participants/:pid", s.handleUpdateEventParticipant)
-	events.Patch("/:id/participants/:pid/status", s.handleUpdateEventParticipantStatus)
-	events.Patch("/:id/participants/:pid/stage", s.handleUpdateEventParticipantStage)
-	events.Delete("/:id/participants/:pid", s.handleDeleteEventParticipant)
-	events.Post("/:id/participants/:pid/check-tag-impact", s.handleCheckTagImpact)
-	events.Post("/:id/campaign", s.handleCreateCampaignFromEvent)
-
-	// Event Google Contacts sync
-	events.Get("/:id/google-sync-status", s.handleEventGoogleSyncStatus)
-	events.Post("/:id/google-sync", s.requirePlanFeature("google_contacts"), s.handleEventGoogleSync)
-
-	// Event Logbook (Bitácora) routes
-	events.Get("/:id/logbooks", s.handleGetEventLogbooks)
-	events.Post("/:id/logbooks", s.handleCreateEventLogbook)
-	events.Post("/:id/logbooks/auto-create", s.handleAutoCreateLogbooks)
-	events.Get("/:id/logbooks/:lid", s.handleGetEventLogbook)
-	events.Put("/:id/logbooks/:lid", s.handleUpdateEventLogbook)
-	events.Delete("/:id/logbooks/:lid", s.handleDeleteEventLogbook)
-	events.Post("/:id/logbooks/:lid/capture", s.handleCaptureLogbookSnapshot)
-	events.Get("/:id/logbooks/:lid/preview", s.handleLogbookPreview)
-	events.Put("/:id/logbooks/:lid/entries/:eid", s.handleUpdateLogbookEntry)
 
 	// Interaction routes
 	interactions := protected.Group("/interactions", s.requirePermission(domain.PermLeads))
@@ -565,9 +421,8 @@ func (s *Server) setupRoutes() {
 	tasks.Delete("/:id/subtasks/:subId", s.handleDeleteSubtask)
 	tasks.Post("/:id/subtasks/:subId/toggle", s.handleToggleSubtask)
 
-	// Contact interactions and events
+	// Contact interactions
 	contacts.Get("/:id/interactions", s.handleGetContactInteractions)
-	contacts.Get("/:id/events", s.handleGetContactEvents)
 
 	// Document template routes
 	docTemplates := protected.Group("/document-templates", s.requirePermission(domain.PermDocuments))
@@ -586,19 +441,11 @@ func (s *Server) setupRoutes() {
 	quickReplies.Put("/:id", s.handleUpdateQuickReply)
 	quickReplies.Delete("/:id", s.handleDeleteQuickReply)
 
-	// Legacy per-account Kommo configuration routes are disabled. Kommo is now
-	// administered centrally through /admin/integrations and assigned to account groups.
-	kommoGroup := protected.Group("/kommo")
-	kommoGroup.All("/", s.handleKommoLegacyDisabled)
-	kommoGroup.All("/*", s.handleKommoLegacyDisabled)
-
 	// Google Contacts integration routes
 	googleGroup := protected.Group("/google", s.requirePermission(domain.PermIntegrations))
 	googleGroup.Get("/auth-url", s.handleGoogleAuthURL)
 	googleGroup.Delete("/disconnect", s.handleGoogleDisconnect)
 	googleGroup.Get("/status", s.handleGoogleStatus)
-	// Google callback (public — called by Google redirect, state carries accountID)
-	api.Get("/google/callback", s.handleGoogleCallback)
 	// Google Contacts sync routes (requires contacts permission)
 	googleContacts := protected.Group("/google/contacts", s.requirePermission(domain.PermContacts), s.requirePlanFeature("google_contacts"))
 	googleContacts.Post("/:id/sync", s.handleGoogleSyncContact)
@@ -609,7 +456,7 @@ func (s *Server) setupRoutes() {
 	googleContacts.Post("/batch/desync-from-leads", s.handleGoogleBatchDesyncFromLeads)
 
 	// WhatsApp Cloud API administration (configuration/audit only; outbound is guarded)
-	whatsappAPI := protected.Group("/whatsapp-api", s.requirePermission(domain.PermIntegrations))
+	whatsappAPI := protected.Group("/whatsapp-api", s.requirePermission(domain.PermWhatsAppAPI))
 	whatsappAPI.Get("/overview", s.handleWhatsAppAPIOverview)
 	whatsappAPI.Get("/templates", s.handleListWhatsAppTemplates)
 	whatsappAPI.Post("/templates", s.handleCreateWhatsAppTemplate)
@@ -640,66 +487,6 @@ func (s *Server) setupRoutes() {
 	automations.Post("/:id/trigger", s.handleTriggerAutomation)
 	automations.Get("/:id/executions", s.handleGetAutomationExecutions)
 	automations.Get("/:id/executions/:execId/logs", s.handleGetExecutionLogs)
-
-	// Survey routes
-	surveys := protected.Group("/surveys", s.requirePermission(domain.PermSurveys))
-	surveys.Get("/", s.handleListSurveys)
-	surveys.Post("/", s.handleCreateSurvey)
-	surveys.Post("/check-slug", s.handleCheckSurveySlug)
-	surveys.Get("/:id", s.handleGetSurvey)
-	surveys.Put("/:id", s.handleUpdateSurvey)
-	surveys.Delete("/:id", s.handleDeleteSurvey)
-	surveys.Patch("/:id/status", s.handleSetSurveyStatus)
-	surveys.Post("/:id/duplicate", s.handleDuplicateSurvey)
-	surveys.Get("/:id/questions", s.handleGetSurveyQuestions)
-	surveys.Put("/:id/questions", s.handleSaveSurveyQuestions)
-	surveys.Get("/:id/responses", s.handleListSurveyResponses)
-	surveys.Get("/:id/responses/:rid", s.handleGetSurveyResponse)
-	surveys.Delete("/:id/responses/:rid", s.handleDeleteSurveyResponse)
-	surveys.Get("/:id/analytics", s.handleGetSurveyAnalytics)
-	surveys.Get("/:id/export", s.handleExportSurveyCSV)
-
-	// Dynamic routes
-	dynamics := protected.Group("/dynamics", s.requirePermission(domain.PermDynamics))
-	dynamics.Get("/", s.handleListDynamics)
-	dynamics.Post("/", s.handleCreateDynamic)
-	dynamics.Post("/check-slug", s.handleCheckDynamicSlug)
-	dynamics.Get("/:id", s.handleGetDynamic)
-	dynamics.Put("/:id", s.handleUpdateDynamic)
-	dynamics.Delete("/:id", s.handleDeleteDynamic)
-	dynamics.Patch("/:id/active", s.handleSetDynamicActive)
-	dynamics.Get("/:id/items", s.handleListDynamicItems)
-	dynamics.Post("/:id/items/bulk-delete", s.handleBulkDeleteDynamicItems)
-	dynamics.Post("/:id/items", s.handleCreateDynamicItem)
-	dynamics.Put("/:id/items/reorder", s.handleReorderDynamicItems)
-	dynamics.Put("/:id/items/:itemId", s.handleUpdateDynamicItem)
-	dynamics.Put("/:id/items/:itemId/options", s.handleSetItemOptions)
-	dynamics.Post("/:id/items/bulk-assign", s.handleBulkAssignOption)
-	dynamics.Delete("/:id/items/:itemId", s.handleDeleteDynamicItem)
-	// Dynamic options
-	dynamics.Get("/:id/options", s.handleListDynamicOptions)
-	dynamics.Post("/:id/options", s.handleCreateDynamicOption)
-	dynamics.Put("/:id/options/reorder", s.handleReorderDynamicOptions)
-	dynamics.Put("/:id/options/:optionId", s.handleUpdateDynamicOption)
-	dynamics.Delete("/:id/options/:optionId", s.handleDeleteDynamicOption)
-	// Dynamic links
-	dynamics.Get("/:id/links", s.handleListDynamicLinks)
-	dynamics.Post("/:id/links", s.handleCreateDynamicLink)
-	dynamics.Post("/:id/links/check-slug", s.handleCheckDynamicLinkSlug)
-	dynamics.Put("/:id/links/:linkId", s.handleUpdateDynamicLink)
-	dynamics.Delete("/:id/links/:linkId", s.handleDeleteDynamicLink)
-	dynamics.Post("/:id/links/:linkId/extra-media", s.handleUploadLinkExtraMedia)
-	dynamics.Delete("/:id/links/:linkId/extra-media", s.handleDeleteLinkExtraMedia)
-	// Multi extra media (up to 10 per link)
-	dynamics.Get("/:id/links/:linkId/media", s.handleListLinkMedia)
-	dynamics.Post("/:id/links/:linkId/media", s.handleCreateLinkMedia)
-	dynamics.Post("/:id/links/:linkId/media/reorder", s.handleReorderLinkMedia)
-	dynamics.Patch("/:id/links/:linkId/media/:mediaId", s.handleUpdateLinkMediaCaption)
-	dynamics.Delete("/:id/links/:linkId/media/:mediaId", s.handleDeleteLinkMedia)
-	// Dynamic link registrations
-	dynamics.Get("/:id/links/:linkId/registrations", s.handleListLinkRegistrations)
-	dynamics.Get("/:id/links/:linkId/registrations/export", s.handleExportLinkRegistrations)
-	dynamics.Delete("/:id/links/:linkId/registrations/:regId", s.handleDeleteLinkRegistration)
 
 	// WebSocket route
 	s.app.Use("/ws", s.wsUpgrade)
@@ -759,43 +546,41 @@ func (s *Server) setupRoutes() {
 	adminRoles.Put("/:id", s.handleAdminUpdateRole)
 	adminRoles.Delete("/:id", s.handleAdminDeleteRole)
 
-	// Integration management
-	adminIntegrations := admin.Group("/integrations")
-	adminIntegrations.Get("/", s.handleAdminListIntegrations)
-	adminIntegrations.Post("/", s.handleAdminCreateIntegration)
-	adminIntegrations.Put("/:id", s.handleAdminUpdateIntegration)
-	adminIntegrations.Delete("/:id", s.handleAdminDeleteIntegration)
-	adminIntegrations.Post("/:id/accounts", s.handleAdminAssignIntegrationAccount)
-	adminIntegrations.Delete("/:id/accounts/:account_id", s.handleAdminRemoveIntegrationAccount)
-	adminIntegrations.Post("/:id/reload", s.handleAdminReloadIntegrations)
-	adminIntegrations.Get("/:id/monitor", s.handleAdminIntegrationMonitor)
-	adminIntegrations.Get("/:id/health", s.handleAdminIntegrationHealth)
-	adminIntegrations.Get("/:id/outbox", s.handleAdminIntegrationOutbox)
-	adminIntegrations.Post("/:id/poll", s.handleAdminForceIntegrationPoll)
 }
 
 // Auth middleware
 func (s *Server) authMiddleware(c *fiber.Ctx) error {
-	authHeader := c.Get("Authorization")
-	if authHeader == "" {
-		// Try cookie
-		authHeader = c.Cookies("auth-token")
+	candidates := make([]string, 0, 2)
+	if authHeader := strings.TrimSpace(c.Get("Authorization")); authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			candidates = append(candidates, strings.TrimSpace(authHeader[7:]))
+		}
 	}
-
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	if token == "" {
-		// Try query param (for file downloads)
-		token = c.Query("token")
+	if cookieToken := strings.TrimSpace(c.Cookies("auth-token")); cookieToken != "" {
+		candidates = append(candidates, cookieToken)
 	}
-	if token == "" {
+	if len(candidates) == 0 {
 		return c.Status(401).JSON(fiber.Map{
 			"success": false,
 			"error":   "Unauthorized",
 		})
 	}
 
-	claims, err := s.services.Auth.ValidateToken(token, s.cfg.JWTSecret)
-	if err != nil {
+	var claims *service.JWTClaims
+	var lastErr error
+	for _, token := range candidates {
+		if token == "" {
+			continue
+		}
+		claims, lastErr = s.services.Auth.ValidateToken(token, s.cfg.JWTSecret)
+		if lastErr == nil && claims != nil {
+			break
+		}
+	}
+	if claims == nil {
+		if lastErr != nil {
+			log.Printf("[AUTH] Invalid auth token: %v", lastErr)
+		}
 		return c.Status(401).JSON(fiber.Map{
 			"success": false,
 			"error":   "Invalid token",
@@ -870,8 +655,17 @@ func (s *Server) requirePermission(module string) fiber.Handler {
 // WebSocket upgrade middleware
 func (s *Server) wsUpgrade(c *fiber.Ctx) error {
 	if websocket.IsWebSocketUpgrade(c) {
-		// Validate token from query param
-		token := c.Query("token")
+		if !s.isAllowedRequestOrigin(c.Get("Origin")) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Origin not allowed"})
+		}
+
+		token := strings.TrimSpace(c.Cookies("auth-token"))
+		if token == "" {
+			authHeader := strings.TrimSpace(c.Get("Authorization"))
+			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+				token = strings.TrimSpace(authHeader[7:])
+			}
+		}
 		if token == "" {
 			return c.Status(401).JSON(fiber.Map{"error": "Missing token"})
 		}
@@ -894,6 +688,42 @@ func (s *Server) wsUpgrade(c *fiber.Ctx) error {
 		return c.Next()
 	}
 	return fiber.ErrUpgradeRequired
+}
+
+func (s *Server) validateBrowserOrigin(c *fiber.Ctx) error {
+	switch c.Method() {
+	case fiber.MethodGet, fiber.MethodHead, fiber.MethodOptions:
+		return c.Next()
+	}
+
+	origin := c.Get("Origin")
+	if origin == "" {
+		return c.Next()
+	}
+	if !s.isAllowedRequestOrigin(origin) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"success": false,
+			"error":   "Origin not allowed",
+		})
+	}
+	return c.Next()
+}
+
+func (s *Server) isAllowedRequestOrigin(origin string) bool {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if origin == "" {
+		return true
+	}
+	for _, allowed := range s.cfg.CORSOrigins {
+		allowed = strings.TrimRight(strings.TrimSpace(allowed), "/")
+		if allowed != "" && origin == allowed {
+			return true
+		}
+	}
+	if s.cfg.PublicURL != "" && origin == strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/") {
+		return true
+	}
+	return s.cfg.IsDevelopment() && (strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:"))
 }
 
 // --- Auth Handlers ---
@@ -972,7 +802,6 @@ func (s *Server) handleLogin(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"success": true,
-		"token":   token,
 		"user": fiber.Map{
 			"id":             user.ID,
 			"username":       user.Username,
@@ -1068,7 +897,6 @@ func (s *Server) handleRefreshToken(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"success": true,
-		"token":   newToken,
 	})
 }
 
@@ -1122,10 +950,6 @@ func (s *Server) handleGetMe(c *fiber.Ctx) error {
 		}
 	}
 
-	// Check if current account has Kommo integration enabled
-	var kommoEnabled bool
-	_ = s.repos.DB().QueryRow(c.Context(), `SELECT COALESCE(kommo_enabled, false) FROM accounts WHERE id = $1`, accountID).Scan(&kommoEnabled)
-
 	plan := ""
 	subscriptionStatus := ""
 	subscriptionIsActive := true
@@ -1178,7 +1002,6 @@ func (s *Server) handleGetMe(c *fiber.Ctx) error {
 			"current_period_end":     currentPeriodEnd,
 			"grace_ends_at":          graceEndsAt,
 			"permissions":            permissions,
-			"kommo_enabled":          kommoEnabled,
 		},
 		"accounts": accountsList,
 	})
@@ -1865,7 +1688,7 @@ func (s *Server) handleFindChatByPhone(c *fiber.Ctx) error {
 	}
 
 	// Normalize and build JID
-	normalized := kommo.NormalizePhone(phone)
+	normalized := phoneutil.Normalize(phone)
 	jid := normalized + "@s.whatsapp.net"
 
 	chat, err := s.services.Chat.FindByJID(c.Context(), accountID, jid)
@@ -3356,6 +3179,11 @@ func (s *Server) handleMediaProxy(c *fiber.Ctx) error {
 	if decoded, err := url.PathUnescape(objectKey); err == nil {
 		objectKey = decoded
 	}
+	accountID := c.Locals("account_id").(uuid.UUID)
+	accountPrefix := accountID.String() + "/"
+	if strings.Contains(objectKey, "..") || strings.HasPrefix(objectKey, "/") || !strings.HasPrefix(objectKey, accountPrefix) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"success": false, "error": "File not allowed"})
+	}
 
 	// Detect content type from extension
 	contentType := "application/octet-stream"
@@ -3442,6 +3270,9 @@ func (s *Server) handleMediaProxy(c *fiber.Ctx) error {
 		if end >= totalSize {
 			end = totalSize - 1
 		}
+		if start < 0 || end < start || start >= totalSize {
+			return c.Status(fiber.StatusRequestedRangeNotSatisfiable).JSON(fiber.Map{"success": false, "error": "Invalid range"})
+		}
 
 		length := end - start + 1
 		data, err := s.storage.GetFileRange(c.Context(), objectKey, start, length)
@@ -3521,8 +3352,8 @@ func (s *Server) handleGetLeads(c *fiber.Ctx) error {
 				       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 				       l.status, l.source, COALESCE(c.notes, l.notes),
 				       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id, l.created_at, l.updated_at,
-				       ps.name, ps.color, ps.position, l.kommo_id,
-				       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at
+				       ps.name, ps.color, ps.position,
+				       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason
 				FROM leads l
 				LEFT JOIN contacts c ON c.id = l.contact_id
 				LEFT JOIN pipeline_stages ps ON ps.id = l.stage_id
@@ -3541,8 +3372,8 @@ func (s *Server) handleGetLeads(c *fiber.Ctx) error {
 					&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName, &lead.Phone,
 					&lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes, &lead.Tags,
 					&lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID, &lead.CreatedAt, &lead.UpdatedAt,
-					&lead.StageName, &lead.StageColor, &lead.StagePosition, &lead.KommoID,
-					&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+					&lead.StageName, &lead.StageColor, &lead.StagePosition,
+					&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 				); scanErr != nil {
 					leadsErr = scanErr
 					return
@@ -3692,46 +3523,10 @@ func (s *Server) invalidateCampaignsCache(accountID uuid.UUID) {
 	}
 }
 
-// invalidateProgramsCache invalidates the cached programs for an account
-func (s *Server) invalidateProgramsCache(accountID uuid.UUID) {
-	if s.cache != nil {
-		_ = s.cache.DelPattern(context.Background(), "programs:"+accountID.String()+":*")
-	}
-}
-
-// invalidateSurveysCache invalidates the cached surveys for an account
-func (s *Server) invalidateSurveysCache(accountID uuid.UUID) {
-	if s.cache != nil {
-		_ = s.cache.DelPattern(context.Background(), "surveys:"+accountID.String()+":*")
-	}
-}
-
-// invalidateDynamicsCache invalidates the cached dynamics for an account
-func (s *Server) invalidateDynamicsCache(accountID uuid.UUID) {
-	if s.cache != nil {
-		_ = s.cache.DelPattern(context.Background(), "dynamics:"+accountID.String()+":*")
-	}
-}
-
 // invalidateAutomationsCache invalidates the cached automations for an account
 func (s *Server) invalidateAutomationsCache(accountID uuid.UUID) {
 	if s.cache != nil {
 		_ = s.cache.DelPattern(context.Background(), "automations:"+accountID.String()+":*")
-	}
-}
-
-// ─── Shared filter helpers ──────────────────────────────────────────────────
-
-// addKommoSyncFilter appends a WHERE clause based on the kommo_sync query param.
-// "kommo" = only leads that exist and are active in Kommo.
-// "kiri" = only leads that are local-only or were deleted from Kommo.
-// "all" (default) = no filter.
-func addKommoSyncFilter(kommoSync string, whereClauses *[]string) {
-	switch kommoSync {
-	case "kommo":
-		*whereClauses = append(*whereClauses, "l.kommo_id IS NOT NULL AND l.kommo_deleted_at IS NULL")
-	case "kiri":
-		*whereClauses = append(*whereClauses, "(l.kommo_id IS NULL OR l.kommo_deleted_at IS NOT NULL)")
 	}
 }
 
@@ -3974,7 +3769,6 @@ func (s *Server) handleGetLeadsPaginated(c *fiber.Ctx) error {
 	}
 
 	addDateFilter(c, "l", leadDateFields, &whereClauses, &args, &argIdx)
-	addKommoSyncFilter(c.Query("kommo_sync", "all"), &whereClauses)
 
 	whereSQL := strings.Join(whereClauses, " AND ")
 
@@ -4074,8 +3868,8 @@ func (s *Server) handleGetLeadsPaginated(c *fiber.Ctx) error {
 				       COALESCE(c.age, l.age) AS age, COALESCE(c.dni, l.dni) AS dni, COALESCE(c.birth_date, l.birth_date) AS birth_date, COALESCE(c.address, l.address) AS address, COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')) AS distrito, COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')) AS ocupacion,
 				       l.status, l.source, COALESCE(c.notes, l.notes) AS notes,
 				       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id,
-				       l.created_at, l.updated_at, l.kommo_id,
-				       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at,
+				       l.created_at, l.updated_at,
+				       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason,
 				       ps.name AS stage_name, ps.color AS stage_color, ps.position AS stage_position,
 				       ROW_NUMBER() OVER (PARTITION BY l.stage_id ORDER BY l.created_at DESC) AS rn
 				FROM leads l
@@ -4086,8 +3880,8 @@ func (s *Server) handleGetLeadsPaginated(c *fiber.Ctx) error {
 			SELECT id, account_id, contact_id, jid, name, last_name, short_name,
 			       phone, email, company, age, dni, birth_date, address, distrito, ocupacion, status, source, notes,
 			       tags, custom_fields, assigned_to, pipeline_id, stage_id,
-			       created_at, updated_at, kommo_id,
-			       is_archived, archived_at, is_blocked, blocked_at, block_reason, kommo_deleted_at,
+			       created_at, updated_at,
+			       is_archived, archived_at, is_blocked, blocked_at, block_reason,
 			       stage_name, stage_color, stage_position
 			FROM ranked WHERE rn <= %d
 			ORDER BY stage_position NULLS LAST, created_at DESC
@@ -4104,8 +3898,8 @@ func (s *Server) handleGetLeadsPaginated(c *fiber.Ctx) error {
 				&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName,
 				&lead.Phone, &lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes,
 				&lead.Tags, &lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID,
-				&lead.CreatedAt, &lead.UpdatedAt, &lead.KommoID,
-				&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+				&lead.CreatedAt, &lead.UpdatedAt,
+				&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 				&lead.StageName, &lead.StageColor, &lead.StagePosition,
 			); err != nil {
 				leadsErr = err
@@ -4232,7 +4026,6 @@ func (s *Server) handleGetLeadsPaginated(c *fiber.Ctx) error {
 			}
 		}
 		addDateFilter(c, "l", leadDateFields, &hClauses, &hArgs, &hIdx)
-		addKommoSyncFilter(c.Query("kommo_sync", "all"), &hClauses)
 		hWhereSQL := strings.Join(hClauses, " AND ")
 		var totalAll int
 		err := s.repos.DB().QueryRow(c.Context(),
@@ -4311,8 +4104,8 @@ func (s *Server) handleGetLeadsPaginated(c *fiber.Ctx) error {
 			       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 			       l.status, l.source, COALESCE(c.notes, l.notes),
 			       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id,
-			       l.created_at, l.updated_at, l.kommo_id,
-			       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at
+			       l.created_at, l.updated_at,
+			       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason
 			FROM leads l
 			LEFT JOIN contacts c ON c.id = l.contact_id
 			WHERE %s AND l.stage_id IS NULL
@@ -4328,8 +4121,8 @@ func (s *Server) handleGetLeadsPaginated(c *fiber.Ctx) error {
 					&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName,
 					&lead.Phone, &lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes,
 					&lead.Tags, &lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID,
-					&lead.CreatedAt, &lead.UpdatedAt, &lead.KommoID,
-					&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+					&lead.CreatedAt, &lead.UpdatedAt,
+					&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 				); err == nil {
 					lead.StructuredTags = tagMap[lead.ID]
 					unassignedLeads = append(unassignedLeads, lead)
@@ -4483,7 +4276,6 @@ func (s *Server) handleGetLeadsByStage(c *fiber.Ctx) error {
 	}
 
 	addDateFilter(c, "l", leadDateFields, &whereClauses, &args, &argIdx)
-	addKommoSyncFilter(c.Query("kommo_sync", "all"), &whereClauses)
 
 	whereSQL := strings.Join(whereClauses, " AND ")
 
@@ -4496,8 +4288,8 @@ func (s *Server) handleGetLeadsByStage(c *fiber.Ctx) error {
 		       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 		       l.status, l.source, COALESCE(c.notes, l.notes),
 		       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id,
-		       l.created_at, l.updated_at, l.kommo_id,
-		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at,
+		       l.created_at, l.updated_at,
+		       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason,
 		       ps.name, ps.color, ps.position
 		FROM leads l
 		LEFT JOIN contacts c ON c.id = l.contact_id
@@ -4520,8 +4312,8 @@ func (s *Server) handleGetLeadsByStage(c *fiber.Ctx) error {
 			&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName,
 			&lead.Phone, &lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes,
 			&lead.Tags, &lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID,
-			&lead.CreatedAt, &lead.UpdatedAt, &lead.KommoID,
-			&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+			&lead.CreatedAt, &lead.UpdatedAt,
+			&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 			&lead.StageName, &lead.StageColor, &lead.StagePosition,
 		); err != nil {
 			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
@@ -4681,7 +4473,6 @@ func (s *Server) handleGetLeadsListPaginated(c *fiber.Ctx) error {
 	}
 
 	addDateFilter(c, "l", leadDateFields, &whereClauses, &args, &argIdx)
-	addKommoSyncFilter(c.Query("kommo_sync", "all"), &whereClauses)
 
 	// Custom field filters for leads (via contact_id)
 	if cfFilterRaw := c.Query("cf_filter"); cfFilterRaw != "" {
@@ -4726,8 +4517,8 @@ func (s *Server) handleGetLeadsListPaginated(c *fiber.Ctx) error {
 			       COALESCE(NULLIF(c.distrito, ''), NULLIF(l.distrito, '')), COALESCE(NULLIF(c.ocupacion, ''), NULLIF(l.ocupacion, '')),
 			       l.status, l.source, COALESCE(c.notes, l.notes),
 			       l.tags, l.custom_fields, l.assigned_to, l.pipeline_id, l.stage_id,
-			       l.created_at, l.updated_at, l.kommo_id,
-			       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason, l.kommo_deleted_at,
+			       l.created_at, l.updated_at,
+			       l.is_archived, l.archived_at, l.is_blocked, l.blocked_at, l.block_reason,
 			       ps.name, ps.color, ps.position
 			FROM leads l
 			LEFT JOIN contacts c ON c.id = l.contact_id
@@ -4748,8 +4539,8 @@ func (s *Server) handleGetLeadsListPaginated(c *fiber.Ctx) error {
 				&lead.ID, &lead.AccountID, &lead.ContactID, &lead.JID, &lead.Name, &lead.LastName, &lead.ShortName,
 				&lead.Phone, &lead.Email, &lead.Company, &lead.Age, &lead.DNI, &lead.BirthDate, &lead.Address, &lead.Distrito, &lead.Ocupacion, &lead.Status, &lead.Source, &lead.Notes,
 				&lead.Tags, &lead.CustomFields, &lead.AssignedTo, &lead.PipelineID, &lead.StageID,
-				&lead.CreatedAt, &lead.UpdatedAt, &lead.KommoID,
-				&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason, &lead.KommoDeletedAt,
+				&lead.CreatedAt, &lead.UpdatedAt,
+				&lead.IsArchived, &lead.ArchivedAt, &lead.IsBlocked, &lead.BlockedAt, &lead.BlockReason,
 				&lead.StageName, &lead.StageColor, &lead.StagePosition,
 			); err != nil {
 				leadsErr = err
@@ -4839,7 +4630,7 @@ func (s *Server) handleCreateLead(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
 	}
 
-	phone := kommo.NormalizePhone(req.Phone)
+	phone := phoneutil.Normalize(req.Phone)
 	jid := ""
 	if phone != "" {
 		jid = phone + "@s.whatsapp.net"
@@ -4998,11 +4789,6 @@ func (s *Server) handleCreateLead(c *fiber.Ctx) error {
 		}
 	}
 
-	// Push new lead to Kommo (async, only if pipeline is Kommo-connected)
-	if kommoSync := s.kommoForAccount(c.Context(), accountID); kommoSync != nil {
-		go kommoSync.PushNewLead(accountID, lead.ID)
-	}
-
 	s.invalidateLeadsCache(accountID)
 	s.broadcastLeadDelta(accountID, "created", lead)
 
@@ -5049,40 +4835,6 @@ func (s *Server) handleGetLead(c *fiber.Ctx) error {
 	return c.JSON(result)
 }
 
-func (s *Server) handleSyncLeadFromKommo(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	leadID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid lead ID"})
-	}
-
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Kommo integration not configured"})
-	}
-	if lead, _ := s.services.Lead.GetByID(c.Context(), leadID); lead == nil || lead.AccountID != accountID {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Lead not found"})
-	}
-
-	if err := kommoSync.SyncSingleLead(c.Context(), accountID, leadID); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-
-	// Invalidate cache after sync
-	s.invalidateLeadsCache(accountID)
-	s.invalidateLeadDetailCache(leadID)
-
-	// Return the updated lead
-	lead, err := s.services.Lead.GetByID(c.Context(), leadID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	tags, _ := s.services.Tag.GetByEntity(c.Context(), "lead", lead.ID)
-	lead.StructuredTags = tags
-
-	return c.JSON(fiber.Map{"success": true, "lead": lead})
-}
-
 func (s *Server) handleUpdateLead(c *fiber.Ctx) error {
 	accountID := c.Locals("account_id").(uuid.UUID)
 	leadID, err := uuid.Parse(c.Params("id"))
@@ -5097,12 +4849,6 @@ func (s *Server) handleUpdateLead(c *fiber.Ctx) error {
 	}
 	if lead == nil || lead.AccountID != accountID {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Lead not found"})
-	}
-
-	// Track old name for Kommo push (before overwriting)
-	var oldName string
-	if lead.Name != nil {
-		oldName = *lead.Name
 	}
 
 	// Parse update request
@@ -5291,34 +5037,6 @@ func (s *Server) handleUpdateLead(c *fiber.Ctx) error {
 		}
 	}
 
-	// Kommo Sync
-	if kommoSync := s.kommoForAccount(c.Context(), lead.AccountID); kommoSync != nil {
-		// If lead is not linked to Kommo yet, try to create it there (PushNewLead handles checks)
-		if lead.KommoID == nil || *lead.KommoID == 0 {
-			go kommoSync.PushNewLead(lead.AccountID, lead.ID)
-		} else {
-			// Already linked, push updates (batched via outbox when enabled)
-			queuedContactProfile := false
-			if req.Name != nil {
-				newName := ""
-				if lead.Name != nil {
-					newName = *lead.Name
-				}
-				if newName != oldName {
-					kommoSync.EnqueuePushLeadName(lead.AccountID, lead.ID)
-					queuedContactProfile = true
-				}
-			}
-			if !queuedContactProfile && lead.ContactID != nil && (req.Age != nil || req.DNI != nil || req.BirthDate != nil || req.Ocupacion != nil) {
-				kommoSync.EnqueuePushContactProfile(lead.AccountID, *lead.ContactID)
-			}
-			// Push pipeline/stage change
-			if req.PipelineID != nil || req.StageID != nil {
-				kommoSync.EnqueuePushLeadStage(lead.AccountID, lead.ID)
-			}
-		}
-	}
-
 	// Auto-sync to Google Contacts if linked contact is synced
 	if s.googleClient != nil && lead.ContactID != nil {
 		go func() {
@@ -5382,31 +5100,6 @@ func (s *Server) handleDeleteLead(c *fiber.Ctx) error {
 
 	accountID := c.Locals("account_id").(uuid.UUID)
 
-	// If delete_from_kommo=true, enqueue a "Perdido" (status 143) move in Kommo.
-	// The outbox will flush it in batch; the local delete below runs immediately.
-	if c.Query("delete_from_kommo") == "true" {
-		kommoSync := s.kommoForAccount(c.Context(), accountID)
-		if kommoSync == nil {
-			return c.Status(400).JSON(fiber.Map{"success": false, "error": "Kommo integration not configured"})
-		}
-		var kommoLeadID *int64
-		var kommoPipelineID *int64
-		err := s.repos.DB().QueryRow(c.Context(), `
-			SELECT l.kommo_id, p.kommo_id
-			FROM leads l
-			LEFT JOIN pipelines p ON l.pipeline_id = p.id
-			WHERE l.id = $1 AND l.account_id = $2
-		`, leadID, accountID).Scan(&kommoLeadID, &kommoPipelineID)
-		if err != nil || kommoLeadID == nil {
-			return c.Status(400).JSON(fiber.Map{"success": false, "error": "Lead no está vinculado a Kommo"})
-		}
-		if kommoPipelineID == nil {
-			return c.Status(400).JSON(fiber.Map{"success": false, "error": "Pipeline no está vinculado a Kommo"})
-		}
-		kommoSync.EnqueuePushLeadStageForced(accountID, leadID, *kommoLeadID, 143, *kommoPipelineID)
-		log.Printf("[DELETE+KOMMO] Lead %s (Kommo %d) enqueued move to Perdido (143) in Kommo pipeline %d", leadID, *kommoLeadID, *kommoPipelineID)
-	}
-
 	// Transfer orphaned interactions to the lead's contact before deleting
 	_, _ = s.repos.DB().Exec(c.Context(), `
 		UPDATE interactions SET contact_id = l.contact_id
@@ -5431,7 +5124,6 @@ func (s *Server) handleDeleteLead(c *fiber.Ctx) error {
 
 func (s *Server) handleDeleteLeadsBatch(c *fiber.Ctx) error {
 	accountID := c.Locals("account_id").(uuid.UUID)
-	deleteFromKommo := c.Query("delete_from_kommo") == "true"
 
 	var req struct {
 		IDs       []string `json:"ids"`
@@ -5471,36 +5163,6 @@ func (s *Server) handleDeleteLeadsBatch(c *fiber.Ctx) error {
 
 	if len(uuids) == 0 {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "No valid IDs provided"})
-	}
-
-	// If delete_from_kommo=true, enqueue "Perdido" moves for synced leads in Kommo
-	if deleteFromKommo {
-		kommoSync := s.kommoForAccount(c.Context(), accountID)
-		if kommoSync == nil {
-			return c.Status(400).JSON(fiber.Map{"success": false, "error": "Kommo integration not configured"})
-		}
-		rows, err := s.repos.DB().Query(c.Context(), `
-			SELECT l.id, l.kommo_id, p.kommo_id
-			FROM leads l
-			LEFT JOIN pipelines p ON l.pipeline_id = p.id
-			WHERE l.id = ANY($1) AND l.account_id = $2
-			  AND l.kommo_id IS NOT NULL AND l.kommo_deleted_at IS NULL
-		`, uuids, accountID)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var leadID uuid.UUID
-				var kommoLeadID, kommoPipelineID *int64
-				if err := rows.Scan(&leadID, &kommoLeadID, &kommoPipelineID); err != nil {
-					continue
-				}
-				if kommoLeadID == nil || kommoPipelineID == nil {
-					continue
-				}
-				kommoSync.EnqueuePushLeadStageForced(accountID, leadID, *kommoLeadID, 143, *kommoPipelineID)
-				log.Printf("[DELETE+KOMMO BATCH] Lead %s (Kommo %d) enqueued move to Perdido (143) in Kommo pipeline %d", leadID, *kommoLeadID, *kommoPipelineID)
-			}
-		}
 	}
 
 	// Transfer orphaned interactions to contacts before batch delete
@@ -5791,19 +5453,11 @@ func (s *Server) handleBlockLeadsBatch(c *fiber.Ctx) error {
 
 func (s *Server) handleGetLeadCounts(c *fiber.Ctx) error {
 	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := c.Query("kommo_sync", "all")
 	pipelineID := c.Query("pipeline_id")
 
 	var extraWhere string
 	var args []interface{}
 	args = append(args, accountID)
-
-	switch kommoSync {
-	case "kommo":
-		extraWhere += " AND kommo_id IS NOT NULL AND kommo_deleted_at IS NULL"
-	case "kiri":
-		extraWhere += " AND (kommo_id IS NULL OR kommo_deleted_at IS NOT NULL)"
-	}
 
 	// Filter by pipeline if specified
 	if pipelineID != "" && pipelineID != "__no_pipeline__" {
@@ -5859,12 +5513,7 @@ func (s *Server) handleUpdateLeadStage(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
-	// Push stage change to Kommo (batched via outbox when enabled)
 	accountID := c.Locals("account_id").(uuid.UUID)
-	if kommoSync := s.kommoForAccount(c.Context(), accountID); kommoSync != nil {
-		kommoSync.EnqueuePushLeadStage(accountID, leadID)
-	}
-
 	s.invalidateLeadsCache(accountID)
 	s.invalidateLeadDetailCache(leadID)
 	// Broadcast delta with stage info
@@ -6101,7 +5750,7 @@ func (s *Server) handleImportCSV(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusPaymentRequired).JSON(fiber.Map{"success": false, "error": err.Error(), "code": "plan_limit_reached", "limit": "max_contacts"})
 	}
 
-	// Detect separator: Kommo uses commas in header, semicolons in data.
+	// Detect separator: CRM uses commas in header, semicolons in data.
 	// General approach: check which delimiter produces more columns consistently.
 	headerLine := strings.TrimSpace(lines[0])
 	dataLine := ""
@@ -6145,7 +5794,7 @@ func (s *Server) handleImportCSV(c *fiber.Ctx) error {
 	}
 
 	// If phone column not found by name, scan first data row for phone-like values
-	// (Kommo exports have unlabeled phone columns containing '+51XXXXXXXXX)
+	// (CRM exports have unlabeled phone columns containing '+51XXXXXXXXX)
 	if phoneCol == -1 && dataLine != "" {
 		dataReader := csv.NewReader(strings.NewReader(dataLine))
 		dataReader.Comma = dataSep
@@ -6183,7 +5832,7 @@ func (s *Server) handleImportCSV(c *fiber.Ctx) error {
 					continue
 				}
 				// Score: prefer values with + prefix or tick marks (phone formatting)
-				// and columns with empty headers (unlabeled = likely phone in Kommo)
+				// and columns with empty headers (unlabeled = likely phone in CRM)
 				score := 1
 				if hasPlus || hasTick {
 					score += 10
@@ -6210,7 +5859,7 @@ func (s *Server) handleImportCSV(c *fiber.Ctx) error {
 		})
 	}
 
-	// Map known columns (supports Kommo naming)
+	// Map known columns (supports CRM naming)
 	nameCol := findCol(colMap, "name", "nombre", "nombre_completo", "nombre completo")
 	emailCol := findCol(colMap, "email", "correo", "e-mail", "e-mail priv.")
 	notesCol := findCol(colMap, "notes", "notas", "observaciones")
@@ -6396,7 +6045,7 @@ func (s *Server) handleImportCSV(c *fiber.Ctx) error {
 			}
 
 			if tags != "" {
-				// Kommo uses ", " as tag separator within the cell
+				// CRM uses ", " as tag separator within the cell
 				tagList := strings.Split(tags, ",")
 				for j := range tagList {
 					tagList[j] = strings.TrimSpace(tagList[j])
@@ -6415,11 +6064,6 @@ func (s *Server) handleImportCSV(c *fiber.Ctx) error {
 	}
 
 	s.invalidateLeadsCache(accountID)
-
-	// Reconcile event participants after CSV import (new leads with tags)
-	if imported > 0 {
-		go s.services.Event.ReconcileAllAccountEvents(context.Background(), accountID)
-	}
 
 	return c.JSON(fiber.Map{
 		"success":  true,
@@ -6655,36 +6299,6 @@ func (s *Server) handleGetContact(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "contact": contact})
 }
 
-func (s *Server) handleSyncContactFromKommo(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	contactID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid contact ID"})
-	}
-
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Kommo integration not configured"})
-	}
-	if contact, _ := s.services.Contact.GetByID(c.Context(), contactID); contact == nil || contact.AccountID != accountID {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "contact not found"})
-	}
-
-	if err := kommoSync.SyncSingleContact(c.Context(), accountID, contactID); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-
-	// Return the updated contact
-	contact, err := s.services.Contact.GetByID(c.Context(), contactID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	tags, _ := s.services.Tag.GetByEntity(c.Context(), "contact", contact.ID)
-	contact.StructuredTags = tags
-
-	return c.JSON(fiber.Map{"success": true, "contact": contact})
-}
-
 func (s *Server) handleUpdateContact(c *fiber.Ctx) error {
 	accountID := c.Locals("account_id").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
@@ -6828,19 +6442,6 @@ func (s *Server) handleUpdateContact(c *fiber.Ctx) error {
 
 	// Sync shared fields to linked lead
 	_ = s.services.Contact.SyncToLead(c.Context(), contact)
-
-	if body.CustomName != nil || body.LastName != nil || body.ShortName != nil || body.Age != nil || body.DNI != nil || body.BirthDate != nil || body.Ocupacion != nil {
-		if kommoSync := s.kommoForAccount(c.Context(), contact.AccountID); kommoSync != nil {
-			queuedViaLead := false
-			if lead, err := s.repos.Lead.GetByContactID(c.Context(), contact.ID); err == nil && lead != nil && lead.KommoID != nil && *lead.KommoID > 0 {
-				kommoSync.EnqueuePushLeadName(contact.AccountID, lead.ID)
-				queuedViaLead = true
-			}
-			if !queuedViaLead {
-				kommoSync.EnqueuePushContactProfile(contact.AccountID, contact.ID)
-			}
-		}
-	}
 
 	// Broadcast contact update via WebSocket
 	s.hub.BroadcastToAccount(contact.AccountID, ws.EventContactUpdate, map[string]interface{}{
@@ -7083,7 +6684,7 @@ func (s *Server) handleCreateContact(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusPaymentRequired).JSON(fiber.Map{"success": false, "error": err.Error(), "code": "plan_limit_reached", "limit": "max_contacts"})
 	}
 
-	normalizedPhone := kommo.NormalizePhone(body.Phone)
+	normalizedPhone := phoneutil.Normalize(body.Phone)
 	jid := ""
 	if normalizedPhone != "" {
 		jid = normalizedPhone + "@s.whatsapp.net"
@@ -7200,7 +6801,7 @@ func (s *Server) handleCreateContactsBulk(c *fiber.Ctx) error {
 	var importErrors []string
 
 	for i, row := range body.Contacts {
-		normalizedPhone := kommo.NormalizePhone(row.Phone)
+		normalizedPhone := phoneutil.Normalize(row.Phone)
 		if normalizedPhone == "" {
 			skipped++
 			importErrors = append(importErrors, fmt.Sprintf("fila %d: teléfono inválido (%q)", i+1, row.Phone))
@@ -7398,8 +6999,6 @@ func (s *Server) handleDeleteTagsBatch(c *fiber.Ctx) error {
 		if err := s.services.Tag.DeleteAll(c.Context(), accountID); err != nil {
 			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 		}
-		// Reconcile event participants after bulk tag deletion
-		go s.services.Event.ReconcileAllAccountEvents(context.Background(), accountID)
 		s.invalidateTagsCache(accountID)
 		return c.JSON(fiber.Map{"success": true, "message": "All tags deleted"})
 	}
@@ -7416,8 +7015,6 @@ func (s *Server) handleDeleteTag(c *fiber.Ctx) error {
 	if err := s.services.Tag.Delete(c.Context(), id); err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
-	// Reconcile event participants after tag deletion (contact_tags rows were removed)
-	go s.services.Event.ReconcileAllAccountEvents(context.Background(), accountID)
 	s.invalidateTagsCache(accountID)
 	return c.JSON(fiber.Map{"success": true})
 }
@@ -7443,18 +7040,8 @@ func (s *Server) handleAssignTag(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
-	// Push tag change to Kommo (batched via outbox) — only for leads, NOT contacts
 	accountID := c.Locals("account_id").(uuid.UUID)
-	if kommoSync := s.kommoForAccount(c.Context(), accountID); kommoSync != nil {
-		switch req.EntityType {
-		case "lead":
-			kommoSync.EnqueuePushLeadTags(accountID, entityID)
-		}
-	}
-
-	// Event tag auto-sync: when a tag is assigned to a lead, add to matching events
 	if req.EntityType == "lead" {
-		go s.services.Event.HandleLeadTagAssigned(context.Background(), accountID, entityID, tagID)
 		// Fire tag_assigned automation trigger
 		s.triggerAutomationTagAssigned(accountID, entityID, tagID)
 	}
@@ -7483,18 +7070,8 @@ func (s *Server) handleRemoveTag(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
-	// Push tag change to Kommo (batched via outbox) — only for leads, NOT contacts
 	accountID := c.Locals("account_id").(uuid.UUID)
-	if kommoSync := s.kommoForAccount(c.Context(), accountID); kommoSync != nil {
-		switch req.EntityType {
-		case "lead":
-			kommoSync.EnqueuePushLeadTags(accountID, entityID)
-		}
-	}
-
-	// Event tag auto-sync: when a tag is removed from a lead, check event membership
 	if req.EntityType == "lead" {
-		go s.services.Event.HandleLeadTagRemoved(context.Background(), accountID, entityID, tagID)
 		// Fire tag_removed automation trigger
 		s.triggerAutomationTagRemoved(accountID, entityID, tagID)
 	}
@@ -11282,7 +10859,7 @@ func (s *Server) handleDeleteInteraction(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid interaction ID"})
 	}
 
-	// Before deleting, capture lead_id and type for Kommo re-push
+	// Before deleting, capture lead_id and type for CRM re-push
 	accountID := c.Locals("account_id").(uuid.UUID)
 	var interactionLeadID *uuid.UUID
 	var interactionType string
@@ -11693,11 +11270,6 @@ func (s *Server) handleAdminCreateAccount(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
-	// Seed template surveys for the new account
-	if err := database.SeedTemplateSurveysForAccount(s.repos.DB(), account.ID.String()); err != nil {
-		log.Printf("[API] Warning: failed to seed template surveys for new account %s: %v", account.ID, err)
-	}
-
 	return c.Status(201).JSON(fiber.Map{"success": true, "account": account})
 }
 
@@ -11730,8 +11302,6 @@ func (s *Server) handleAdminUpdateAccount(c *fiber.Ctx) error {
 		Plan              string `json:"plan"`
 		MaxDevices        int    `json:"max_devices"`
 		StorageLimitBytes int64  `json:"storage_limit_bytes"`
-		MCPEnabled        bool   `json:"mcp_enabled"`
-		KommoEnabled      bool   `json:"kommo_enabled"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
@@ -11754,8 +11324,6 @@ func (s *Server) handleAdminUpdateAccount(c *fiber.Ctx) error {
 		Plan:              req.Plan,
 		MaxDevices:        req.MaxDevices,
 		StorageLimitBytes: req.StorageLimitBytes,
-		MCPEnabled:        req.MCPEnabled,
-		KommoEnabled:      req.KommoEnabled,
 	}
 
 	if err := s.services.Account.Update(c.Context(), account); err != nil {
@@ -11819,8 +11387,7 @@ func (s *Server) handleAdminDeleteAccount(c *fiber.Ctx) error {
 func (s *Server) adminAccountPurgeSummary(ctx context.Context, accountID uuid.UUID) (fiber.Map, error) {
 	tables := []string{
 		"user_accounts", "users", "devices", "contacts", "chats", "messages", "leads", "pipelines", "tags",
-		"campaigns", "events", "programs", "documents", "quick_replies", "automation_flows", "google_contacts_sync",
-		"kommo_connected_pipelines", "kommo_push_outbox", "integration_instance_accounts",
+		"campaigns", "documents", "quick_replies", "automation_flows", "google_contacts_sync",
 	}
 	counts := fiber.Map{}
 	for _, table := range tables {
@@ -11926,7 +11493,6 @@ func (s *Server) handleAdminPurgeAccount(c *fiber.Ctx) error {
 	if err := tx.Commit(c.Context()); err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
-	s.reloadKommoManager(c.Context())
 	return c.JSON(fiber.Map{"success": true, "purged": true, "deleted_files": deletedFiles, "summary": summary})
 }
 
@@ -12108,6 +11674,25 @@ func (s *Server) handleAdminUpdateUser(c *fiber.Ctx) error {
 	if err := s.services.Account.UpdateUser(c.Context(), user); err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
+	assignments, err := s.services.Account.GetUserAccountAssignments(c.Context(), id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if len(assignments) > 0 {
+		targetAccountID := assignments[0].AccountID
+		for _, assignment := range assignments {
+			if assignment.IsDefault {
+				targetAccountID = assignment.AccountID
+				break
+			}
+		}
+		if err := s.repos.UserAccount.UpdateRole(c.Context(), id, targetAccountID, req.Role); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+		if err := s.repos.UserAccount.NormalizeForUser(c.Context(), id); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+	}
 
 	return c.JSON(fiber.Map{"success": true})
 }
@@ -12206,6 +11791,104 @@ func (s *Server) handleAdminDeleteUser(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+func (s *Server) handleAdminGetRoles(c *fiber.Ctx) error {
+	roles, err := s.repos.Role.GetAll(c.Context())
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if roles == nil {
+		roles = []*domain.Role{}
+	}
+	return c.JSON(fiber.Map{"success": true, "roles": roles})
+}
+
+func (s *Server) handleAdminCreateRole(c *fiber.Ctx) error {
+	var req struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Permissions []string `json:"permissions"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
+	}
+	role := &domain.Role{
+		Name:        strings.TrimSpace(req.Name),
+		Description: strings.TrimSpace(req.Description),
+		Permissions: sanitizeRolePermissions(req.Permissions),
+	}
+	if role.Name == "" {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Role name is required"})
+	}
+	if err := s.repos.Role.Create(c.Context(), role); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	return c.Status(201).JSON(fiber.Map{"success": true, "role": role})
+}
+
+func (s *Server) handleAdminUpdateRole(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	existing, err := s.repos.Role.GetByID(c.Context(), id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if existing == nil {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Role not found"})
+	}
+	if existing.IsSystem {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "System roles cannot be edited"})
+	}
+	var req struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Permissions []string `json:"permissions"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
+	}
+	existing.Name = strings.TrimSpace(req.Name)
+	existing.Description = strings.TrimSpace(req.Description)
+	existing.Permissions = sanitizeRolePermissions(req.Permissions)
+	if existing.Name == "" {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Role name is required"})
+	}
+	if err := s.repos.Role.Update(c.Context(), existing); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "role": existing})
+}
+
+func (s *Server) handleAdminDeleteRole(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	if err := s.repos.Role.Delete(c.Context(), id); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+func sanitizeRolePermissions(input []string) []string {
+	allowed := make(map[string]bool, len(domain.AllPermissions))
+	for _, permission := range domain.AllPermissions {
+		allowed[permission] = true
+	}
+	seen := make(map[string]bool, len(input))
+	out := make([]string, 0, len(input))
+	for _, permission := range input {
+		permission = strings.TrimSpace(permission)
+		if permission == "" || seen[permission] || !allowed[permission] {
+			continue
+		}
+		seen[permission] = true
+		out = append(out, permission)
+	}
+	return out
+}
+
 // --- Switch Account Handler ---
 
 func (s *Server) handleSwitchAccount(c *fiber.Ctx) error {
@@ -12259,7 +11942,6 @@ func (s *Server) handleSwitchAccount(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"success": true,
-		"token":   token,
 		"user": fiber.Map{
 			"id":             user.ID,
 			"username":       user.Username,
@@ -12501,940 +12183,6 @@ func (s *Server) handleDeleteQuickReply(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"success": true})
 }
-
-// --- Kommo Webhook Handler (public, no auth — secret in URL) ---
-
-// handleKommoWebhook processes incoming webhooks from Kommo.
-// Validates secret, parses the form-encoded payload, fetches the full lead,
-// and syncs it to ALL accounts with Kommo integration enabled.
-func (s *Server) handleKommoWebhook(c *fiber.Ctx) error {
-	secret := c.Params("secret")
-	kommoSync := s.kommoForWebhook(secret)
-	if kommoSync == nil {
-		return c.SendStatus(fiber.StatusNotFound) // Return 404 to not reveal webhook exists
-	}
-
-	// Kommo sends form-encoded data with bracket notation:
-	// leads[update][0][id]=12345, leads[add][0][id]=12345, etc.
-	// We just need to extract the lead IDs from the form data.
-	body := string(c.Body())
-	if body == "" {
-		return c.SendStatus(fiber.StatusOK)
-	}
-
-	// Parse form values
-	args := c.Request().PostArgs()
-
-	// Collect all lead IDs from the webhook payload
-	kommoLeadIDs := make(map[int]bool)
-
-	// Check various event patterns: leads[update], leads[add], leads[status]
-	for _, action := range []string{"update", "add", "status"} {
-		for i := 0; i < 50; i++ { // Kommo batches up to ~50 leads per webhook
-			key := fmt.Sprintf("leads[%s][%d][id]", action, i)
-			val := args.Peek(key)
-			if len(val) == 0 {
-				break
-			}
-			if id, err := strconv.Atoi(string(val)); err == nil && id > 0 {
-				kommoLeadIDs[id] = true
-			}
-		}
-	}
-
-	// Check for delete events: leads[delete][0][id]
-	var deletedLeadIDs []int
-	for i := 0; i < 50; i++ {
-		key := fmt.Sprintf("leads[delete][%d][id]", i)
-		val := args.Peek(key)
-		if len(val) == 0 {
-			break
-		}
-		if id, err := strconv.Atoi(string(val)); err == nil && id > 0 {
-			deletedLeadIDs = append(deletedLeadIDs, id)
-		}
-	}
-
-	if len(kommoLeadIDs) == 0 && len(deletedLeadIDs) == 0 {
-		// Might be a contact or other event — acknowledge but don't process
-		return c.SendStatus(fiber.StatusOK)
-	}
-
-	log.Printf("[WEBHOOK] Received %d lead IDs, %d deleted from Kommo", len(kommoLeadIDs), len(deletedLeadIDs))
-
-	// Process asynchronously to avoid blocking the webhook response
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
-		for kommoID := range kommoLeadIDs {
-			kommoSync.ProcessWebhookLead(ctx, kommoID)
-		}
-
-		// Mark deleted leads across all accounts
-		for _, kommoID := range deletedLeadIDs {
-			res, err := s.repos.DB().Exec(ctx,
-				`UPDATE leads SET kommo_deleted_at = NOW(), updated_at = NOW() WHERE kommo_id = $1 AND kommo_deleted_at IS NULL`,
-				int64(kommoID))
-			if err != nil {
-				log.Printf("[WEBHOOK] Failed to mark lead Kommo %d as deleted: %v", kommoID, err)
-				continue
-			}
-			if res.RowsAffected() > 0 {
-				log.Printf("[WEBHOOK] Marked lead Kommo %d as deleted (%d rows)", kommoID, res.RowsAffected())
-			}
-		}
-	}()
-
-	return c.SendStatus(fiber.StatusOK)
-}
-
-// --- Kommo Handlers ---
-
-func (s *Server) handleKommoLegacyDisabled(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusGone).JSON(fiber.Map{
-		"success": false,
-		"error":   "La configuración de Kommo se administra desde Admin > Integraciones",
-	})
-}
-
-func (s *Server) handleKommoStatus(c *fiber.Ctx) error {
-	kommoSync := s.defaultKommoSync()
-	configured := kommoSync != nil
-	result := fiber.Map{
-		"success":    true,
-		"configured": configured,
-	}
-	if s.kommoManager != nil {
-		result["runtime"] = s.kommoManager.RuntimeStatus()
-	}
-	if configured {
-		client := kommoSync.GetClient()
-		acc, err := client.GetAccount()
-		if err != nil {
-			result["connected"] = false
-			result["error"] = err.Error()
-		} else {
-			result["connected"] = true
-			result["account"] = fiber.Map{
-				"id":       acc.ID,
-				"name":     acc.Name,
-				"currency": acc.Currency,
-				"country":  acc.Country,
-			}
-		}
-	}
-	return c.JSON(result)
-}
-
-func (s *Server) handleKommoSync(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-
-	// Check if Kommo is enabled for this account
-	var kommoEnabled bool
-	_ = s.repos.DB().QueryRow(c.Context(), `SELECT COALESCE(kommo_enabled, false) FROM accounts WHERE id = $1`, accountID).Scan(&kommoEnabled)
-	if !kommoEnabled {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Kommo está deshabilitado para esta cuenta"})
-	}
-
-	started := kommoSync.StartFullSyncAsync(accountID)
-	if !started {
-		return c.Status(409).JSON(fiber.Map{
-			"success": false,
-			"error":   "Ya hay una sincronización en curso para esta cuenta",
-		})
-	}
-
-	// Invalidate cache when sync starts (will be stale)
-	s.invalidateLeadsCache(accountID)
-
-	return c.JSON(fiber.Map{
-		"success": true,
-		"message": "Sincronización iniciada en segundo plano",
-	})
-}
-
-func (s *Server) handleKommoFullSyncStatus(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	status := kommoSync.GetFullSyncStatus(accountID)
-	if status == nil {
-		return c.JSON(fiber.Map{"success": true, "status": nil})
-	}
-	return c.JSON(fiber.Map{"success": true, "status": status})
-}
-
-func (s *Server) handleKommoGetPipelines(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	client := kommoSync.GetClient()
-	pipelines, err := client.GetPipelines()
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-
-	// Also get connected pipelines to mark status
-	connected, _ := kommoSync.GetConnectedPipelines(c.Context(), accountID)
-	connectedMap := make(map[int64]bool)
-	for _, cp := range connected {
-		if cp.Enabled {
-			connectedMap[cp.KommoPipelineID] = true
-		}
-	}
-
-	type pipelineInfo struct {
-		ID        int    `json:"id"`
-		Name      string `json:"name"`
-		IsMain    bool   `json:"is_main"`
-		Stages    int    `json:"stages"`
-		Connected bool   `json:"connected"`
-	}
-	var result []pipelineInfo
-	for _, p := range pipelines {
-		result = append(result, pipelineInfo{
-			ID:        p.ID,
-			Name:      p.Name,
-			IsMain:    p.IsMain,
-			Stages:    len(p.Statuses),
-			Connected: connectedMap[int64(p.ID)],
-		})
-	}
-
-	return c.JSON(fiber.Map{"success": true, "pipelines": result})
-}
-
-func (s *Server) handleKommoGetConnected(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	connected, err := kommoSync.GetConnectedPipelines(c.Context(), accountID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if connected == nil {
-		connected = []kommo.ConnectedPipeline{}
-	}
-	return c.JSON(fiber.Map{"success": true, "connected": connected})
-}
-
-func (s *Server) handleKommoConnectPipeline(c *fiber.Ctx) error {
-	kommoID, err := strconv.Atoi(c.Params("kommoId"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid pipeline ID"})
-	}
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	cp, err := kommoSync.ConnectPipeline(c.Context(), accountID, kommoID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	return c.JSON(fiber.Map{"success": true, "connected_pipeline": cp})
-}
-
-func (s *Server) handleKommoDisconnectPipeline(c *fiber.Ctx) error {
-	kommoID, err := strconv.Atoi(c.Params("kommoId"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid pipeline ID"})
-	}
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	if err := kommoSync.DisconnectPipeline(c.Context(), accountID, kommoID); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	return c.JSON(fiber.Map{"success": true})
-}
-
-func (s *Server) handleKommoSyncStatus(c *fiber.Ctx) error {
-	kommoSync := s.defaultKommoSync()
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	status := kommoSync.GetStatus()
-	result := fiber.Map{"success": true, "status": status}
-	if s.kommoManager != nil {
-		result["runtime"] = s.kommoManager.RuntimeStatus()
-	}
-	return c.JSON(result)
-}
-
-// handleEventsPollerStatus returns the current status of the Kommo Events API poller.
-func (s *Server) handleEventsPollerStatus(c *fiber.Ctx) error {
-	kommoSync := s.defaultKommoSync()
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	status := kommoSync.GetEventsPollerStatus()
-	return c.JSON(fiber.Map{"success": true, "events_poller": status})
-}
-
-// handleForceEventsPoll triggers an immediate events poll cycle.
-func (s *Server) handleForceEventsPoll(c *fiber.Ctx) error {
-	kommoSync := s.defaultKommoSync()
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	events, leads := kommoSync.ForceEventsPoll()
-	return c.JSON(fiber.Map{"success": true, "events_found": events, "leads_synced": leads})
-}
-
-// handleSyncMonitor returns the sync monitor data (ring buffer + per-subsystem stats).
-func (s *Server) handleSyncMonitor(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		kommoSync = s.defaultKommoSync()
-	}
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-	data := kommoSync.Monitor.GetData()
-	return c.JSON(fiber.Map{"success": true, "monitor": data})
-}
-
-// handleKommoToggleEnabled enables or disables Kommo integration for the current account.
-func (s *Server) handleKommoToggleEnabled(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
-	}
-
-	_, err := s.repos.DB().Exec(c.Context(), `UPDATE accounts SET kommo_enabled = $1 WHERE id = $2`, req.Enabled, accountID)
-	if err != nil {
-		log.Printf("[API] Failed to toggle kommo_enabled for account %s: %v", accountID, err)
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": "Failed to update"})
-	}
-
-	log.Printf("[API] Account %s kommo_enabled set to %v", accountID, req.Enabled)
-	return c.JSON(fiber.Map{"success": true, "kommo_enabled": req.Enabled})
-}
-
-// handleKommoToggleAllPipelines enables or disables ALL connected pipelines for the account.
-func (s *Server) handleKommoToggleAllPipelines(c *fiber.Ctx) error {
-	accountID := c.Locals("account_id").(uuid.UUID)
-	kommoSync := s.kommoForAccount(c.Context(), accountID)
-	if kommoSync == nil {
-		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Kommo not configured"})
-	}
-
-	var body struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
-	}
-
-	result, err := s.repos.DB().Exec(c.Context(),
-		`UPDATE kommo_connected_pipelines SET enabled = $2 WHERE account_id = $1 AND integration_instance_id IS NOT DISTINCT FROM $3`,
-		accountID, body.Enabled, kommoSync.InstanceID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-
-	s.invalidateLeadsCache(accountID)
-
-	return c.JSON(fiber.Map{
-		"success": true,
-		"count":   result.RowsAffected(),
-		"enabled": body.Enabled,
-	})
-}
-
-// --- Admin Role Handlers ---
-
-func normalizeRolePermissions(input []string) ([]string, string) {
-	allowed := map[string]bool{domain.PermAll: true}
-	for _, permission := range domain.AllPermissions {
-		allowed[permission] = true
-	}
-
-	seen := make(map[string]bool, len(input))
-	normalized := make([]string, 0, len(input))
-	for _, permission := range input {
-		permission = strings.TrimSpace(permission)
-		if permission == "" {
-			continue
-		}
-		if !allowed[permission] {
-			return nil, permission
-		}
-		if seen[permission] {
-			continue
-		}
-		seen[permission] = true
-		normalized = append(normalized, permission)
-	}
-
-	return normalized, ""
-}
-
-func (s *Server) invalidateUsersWithRole(ctx context.Context, roleID uuid.UUID) {
-	rows, err := s.repos.DB().Query(ctx, `SELECT DISTINCT user_id FROM user_accounts WHERE role_id = $1`, roleID)
-	if err != nil {
-		log.Printf("[ADMIN] failed to load users for role invalidation %s: %v", roleID, err)
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var userID uuid.UUID
-		if err := rows.Scan(&userID); err != nil {
-			log.Printf("[ADMIN] failed to scan user for role invalidation %s: %v", roleID, err)
-			continue
-		}
-		s.services.Auth.InvalidateUserSessions(userID)
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("[ADMIN] failed during role invalidation %s: %v", roleID, err)
-	}
-}
-
-func (s *Server) handleAdminGetRoles(c *fiber.Ctx) error {
-	roles, err := s.services.Role.GetAll(c.Context())
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if roles == nil {
-		roles = make([]*domain.Role, 0)
-	}
-	return c.JSON(fiber.Map{"success": true, "roles": roles})
-}
-
-func (s *Server) handleAdminCreateRole(c *fiber.Ctx) error {
-	var req struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Permissions []string `json:"permissions"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
-	}
-	if req.Name == "" {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Name is required"})
-	}
-	if req.Permissions == nil {
-		req.Permissions = []string{}
-	}
-	permissions, invalid := normalizeRolePermissions(req.Permissions)
-	if invalid != "" {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": fmt.Sprintf("Invalid permission: %s", invalid)})
-	}
-
-	role := &domain.Role{
-		Name:        req.Name,
-		Description: req.Description,
-		Permissions: permissions,
-	}
-	if err := s.services.Role.Create(c.Context(), role); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	return c.Status(201).JSON(fiber.Map{"success": true, "role": role})
-}
-
-func (s *Server) handleAdminUpdateRole(c *fiber.Ctx) error {
-	roleID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid role ID"})
-	}
-
-	var req struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Permissions []string `json:"permissions"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
-	}
-	if req.Name == "" {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Name is required"})
-	}
-	if req.Permissions == nil {
-		req.Permissions = []string{}
-	}
-	permissions, invalid := normalizeRolePermissions(req.Permissions)
-	if invalid != "" {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": fmt.Sprintf("Invalid permission: %s", invalid)})
-	}
-
-	role := &domain.Role{
-		ID:          roleID,
-		Name:        req.Name,
-		Description: req.Description,
-		Permissions: permissions,
-	}
-	if err := s.services.Role.Update(c.Context(), role); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	s.invalidateUsersWithRole(c.Context(), roleID)
-	return c.JSON(fiber.Map{"success": true, "role": role})
-}
-
-func (s *Server) handleAdminDeleteRole(c *fiber.Ctx) error {
-	roleID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid role ID"})
-	}
-
-	if err := s.services.Role.Delete(c.Context(), roleID); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	return c.JSON(fiber.Map{"success": true})
-}
-
-type adminIntegrationRequest struct {
-	Provider      string      `json:"provider"`
-	Scope         string      `json:"scope"`
-	Name          string      `json:"name"`
-	Status        string      `json:"status"`
-	IsActive      *bool       `json:"is_active"`
-	Subdomain     string      `json:"subdomain"`
-	ClientID      string      `json:"client_id"`
-	ClientSecret  string      `json:"client_secret"`
-	AccessToken   string      `json:"access_token"`
-	RefreshToken  string      `json:"refresh_token"`
-	RedirectURI   string      `json:"redirect_uri"`
-	WebhookSecret string      `json:"webhook_secret"`
-	Config        []byte      `json:"config"`
-	Accounts      []uuid.UUID `json:"accounts"`
-}
-
-func integrationResponse(instance *domain.IntegrationInstance) fiber.Map {
-	if instance == nil {
-		return fiber.Map{}
-	}
-	return fiber.Map{
-		"id":                 instance.ID,
-		"provider":           instance.Provider,
-		"scope":              instance.Scope,
-		"name":               instance.Name,
-		"status":             instance.Status,
-		"is_active":          instance.IsActive,
-		"subdomain":          instance.Subdomain,
-		"client_id":          instance.ClientID,
-		"redirect_uri":       instance.RedirectURI,
-		"config":             instance.Config,
-		"last_sync_at":       instance.LastSyncAt,
-		"created_at":         instance.CreatedAt,
-		"updated_at":         instance.UpdatedAt,
-		"has_client_secret":  instance.ClientSecret != "",
-		"has_access_token":   instance.AccessToken != "",
-		"has_refresh_token":  instance.RefreshToken != "",
-		"has_webhook_secret": instance.WebhookSecret != "",
-		"accounts":           instance.Accounts,
-	}
-}
-
-func (s *Server) reloadKommoManager(ctx context.Context) {
-	if s.kommoManager == nil {
-		return
-	}
-	if err := s.kommoManager.Reload(ctx); err != nil {
-		log.Printf("[API] Failed to reload Kommo manager: %v", err)
-	}
-	s.kommoSync = s.kommoManager.Primary()
-}
-
-func (s *Server) handleAdminListIntegrations(c *fiber.Ctx) error {
-	instances, err := s.repos.Integration.List(c.Context(), c.Query("provider"))
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	items := make([]fiber.Map, 0, len(instances))
-	for _, instance := range instances {
-		items = append(items, integrationResponse(instance))
-	}
-	return c.JSON(fiber.Map{"success": true, "integrations": items})
-}
-
-func (s *Server) handleAdminCreateIntegration(c *fiber.Ctx) error {
-	var req adminIntegrationRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
-	}
-	if strings.TrimSpace(req.Provider) == "" {
-		req.Provider = domain.IntegrationProviderKommo
-	}
-	if strings.TrimSpace(req.Scope) == "" {
-		req.Scope = domain.IntegrationScopeMultiAccount
-	}
-	if strings.TrimSpace(req.Status) == "" {
-		req.Status = domain.IntegrationStatusActive
-	}
-	if strings.TrimSpace(req.Name) == "" {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Name is required"})
-	}
-	active := true
-	if req.IsActive != nil {
-		active = *req.IsActive
-	}
-	configData := req.Config
-	if len(configData) == 0 {
-		configData = []byte(`{}`)
-	}
-	instance := &domain.IntegrationInstance{
-		Provider:      strings.TrimSpace(req.Provider),
-		Scope:         strings.TrimSpace(req.Scope),
-		Name:          strings.TrimSpace(req.Name),
-		Status:        strings.TrimSpace(req.Status),
-		IsActive:      active,
-		Subdomain:     strings.TrimSpace(req.Subdomain),
-		ClientID:      strings.TrimSpace(req.ClientID),
-		ClientSecret:  strings.TrimSpace(req.ClientSecret),
-		AccessToken:   strings.TrimSpace(req.AccessToken),
-		RefreshToken:  strings.TrimSpace(req.RefreshToken),
-		RedirectURI:   strings.TrimSpace(req.RedirectURI),
-		WebhookSecret: strings.TrimSpace(req.WebhookSecret),
-		Config:        configData,
-	}
-	if err := s.repos.Integration.Create(c.Context(), instance); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	for _, accountID := range req.Accounts {
-		_ = s.repos.Integration.AssignAccount(c.Context(), instance.ID, accountID, true)
-		if instance.Provider == domain.IntegrationProviderKommo {
-			_, _ = s.repos.DB().Exec(c.Context(), `UPDATE accounts SET kommo_enabled = TRUE WHERE id = $1`, accountID)
-		}
-	}
-	s.reloadKommoManager(c.Context())
-	created, _ := s.repos.Integration.GetByID(c.Context(), instance.ID)
-	return c.Status(201).JSON(fiber.Map{"success": true, "integration": integrationResponse(created)})
-}
-
-func (s *Server) handleAdminUpdateIntegration(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	instance, err := s.repos.Integration.GetByID(c.Context(), id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if instance == nil {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Integration not found"})
-	}
-	var req adminIntegrationRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
-	}
-	if strings.TrimSpace(req.Scope) != "" {
-		instance.Scope = strings.TrimSpace(req.Scope)
-	}
-	if strings.TrimSpace(req.Name) != "" {
-		instance.Name = strings.TrimSpace(req.Name)
-	}
-	if strings.TrimSpace(req.Status) != "" {
-		instance.Status = strings.TrimSpace(req.Status)
-	}
-	if req.IsActive != nil {
-		instance.IsActive = *req.IsActive
-	}
-	if strings.TrimSpace(req.Subdomain) != "" {
-		instance.Subdomain = strings.TrimSpace(req.Subdomain)
-	}
-	if strings.TrimSpace(req.ClientID) != "" {
-		instance.ClientID = strings.TrimSpace(req.ClientID)
-	}
-	if strings.TrimSpace(req.ClientSecret) != "" {
-		instance.ClientSecret = strings.TrimSpace(req.ClientSecret)
-	}
-	if strings.TrimSpace(req.AccessToken) != "" {
-		instance.AccessToken = strings.TrimSpace(req.AccessToken)
-	}
-	if strings.TrimSpace(req.RefreshToken) != "" {
-		instance.RefreshToken = strings.TrimSpace(req.RefreshToken)
-	}
-	if strings.TrimSpace(req.RedirectURI) != "" {
-		instance.RedirectURI = strings.TrimSpace(req.RedirectURI)
-	}
-	if strings.TrimSpace(req.WebhookSecret) != "" {
-		instance.WebhookSecret = strings.TrimSpace(req.WebhookSecret)
-	}
-	if len(req.Config) > 0 {
-		instance.Config = req.Config
-	}
-	if err := s.repos.Integration.Update(c.Context(), instance); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	s.reloadKommoManager(c.Context())
-	updated, _ := s.repos.Integration.GetByID(c.Context(), id)
-	return c.JSON(fiber.Map{"success": true, "integration": integrationResponse(updated)})
-}
-
-func (s *Server) handleAdminDeleteIntegration(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	if err := s.repos.Integration.Delete(c.Context(), id); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	s.reloadKommoManager(c.Context())
-	return c.JSON(fiber.Map{"success": true})
-}
-
-func (s *Server) handleAdminAssignIntegrationAccount(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	var req struct {
-		AccountID uuid.UUID `json:"account_id"`
-		Enabled   *bool     `json:"enabled"`
-	}
-	if err := c.BodyParser(&req); err != nil || req.AccountID == uuid.Nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
-	}
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-	instance, err := s.repos.Integration.GetByID(c.Context(), id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if instance == nil {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Integration not found"})
-	}
-	if err := s.repos.Integration.AssignAccount(c.Context(), id, req.AccountID, enabled); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if instance.Provider == domain.IntegrationProviderKommo {
-		_, _ = s.repos.DB().Exec(c.Context(), `UPDATE accounts SET kommo_enabled = $1 WHERE id = $2`, enabled, req.AccountID)
-	}
-	s.reloadKommoManager(c.Context())
-	updated, _ := s.repos.Integration.GetByID(c.Context(), id)
-	return c.JSON(fiber.Map{"success": true, "integration": integrationResponse(updated)})
-}
-
-func (s *Server) handleAdminRemoveIntegrationAccount(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	accountID, err := uuid.Parse(c.Params("account_id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid account ID"})
-	}
-	instance, _ := s.repos.Integration.GetByID(c.Context(), id)
-	if err := s.repos.Integration.RemoveAccount(c.Context(), id, accountID); err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if instance != nil && instance.Provider == domain.IntegrationProviderKommo {
-		_, _ = s.repos.DB().Exec(c.Context(), `UPDATE accounts SET kommo_enabled = FALSE WHERE id = $1`, accountID)
-	}
-	s.reloadKommoManager(c.Context())
-	return c.JSON(fiber.Map{"success": true})
-}
-
-func (s *Server) handleAdminReloadIntegrations(c *fiber.Ctx) error {
-	s.reloadKommoManager(c.Context())
-	if s.kommoManager == nil {
-		return c.JSON(fiber.Map{"success": true, "runtime": fiber.Map{"running_instances": 0}})
-	}
-	return c.JSON(fiber.Map{"success": true, "runtime": s.kommoManager.RuntimeStatus()})
-}
-
-func (s *Server) handleAdminIntegrationMonitor(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	instance, err := s.repos.Integration.GetByID(c.Context(), id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if instance == nil {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Integration not found"})
-	}
-
-	if svc := s.kommoSyncForInstance(id); svc != nil && svc.Monitor != nil {
-		return c.JSON(fiber.Map{"success": true, "monitor": svc.Monitor.GetData()})
-	}
-
-	monitor := kommo.NewSyncMonitorForInstance(s.repos.DB(), &id)
-	defer monitor.Stop()
-	return c.JSON(fiber.Map{"success": true, "monitor": monitor.GetData()})
-}
-
-func (s *Server) handleAdminIntegrationHealth(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	instance, err := s.repos.Integration.GetByID(c.Context(), id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if instance == nil {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Integration not found"})
-	}
-
-	svc := s.kommoSyncForInstance(id)
-	outbox, err := s.integrationOutboxSummary(c.Context(), id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-
-	health := fiber.Map{
-		"integration":           integrationResponse(instance),
-		"runtime_running":       svc != nil,
-		"manager":               fiber.Map{"available": s.kommoManager != nil},
-		"webhook_configured":    instance.WebhookSecret != "",
-		"webhook_url":           redactedKommoWebhookURL(s.cfg.PublicURL, instance.WebhookSecret),
-		"public_url_configured": strings.TrimSpace(s.cfg.PublicURL) != "",
-		"assigned_accounts":     instance.Accounts,
-		"assigned_count":        len(instance.Accounts),
-		"outbox":                outbox["totals"],
-	}
-	if svc != nil {
-		health["worker"] = svc.GetStatus()
-		health["events_poller"] = svc.GetEventsPollerStatus()
-	}
-	if s.kommoManager != nil {
-		health["manager"] = s.kommoManager.RuntimeStatus()
-	}
-
-	return c.JSON(fiber.Map{"success": true, "health": health})
-}
-
-func (s *Server) handleAdminIntegrationOutbox(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	instance, err := s.repos.Integration.GetByID(c.Context(), id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	if instance == nil {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Integration not found"})
-	}
-	outbox, err := s.integrationOutboxSummary(c.Context(), id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-	return c.JSON(fiber.Map{"success": true, "outbox": outbox})
-}
-
-func (s *Server) handleAdminForceIntegrationPoll(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid integration ID"})
-	}
-	svc := s.kommoSyncForInstance(id)
-	if svc == nil {
-		return c.Status(409).JSON(fiber.Map{"success": false, "error": "Integration runtime is not active"})
-	}
-	events, leads := svc.ForceEventsPoll()
-	return c.JSON(fiber.Map{"success": true, "events": events, "leads": leads})
-}
-
-func (s *Server) kommoSyncForInstance(id uuid.UUID) *kommo.SyncService {
-	if s.kommoManager != nil {
-		if svc := s.kommoManager.ForInstance(id); svc != nil {
-			return svc
-		}
-	}
-	if s.kommoSync != nil && s.kommoSync.InstanceID != nil && *s.kommoSync.InstanceID == id {
-		return s.kommoSync
-	}
-	return nil
-}
-
-func redactedKommoWebhookURL(publicURL, secret string) string {
-	if strings.TrimSpace(secret) == "" {
-		return ""
-	}
-	redacted := "****"
-	if len(secret) > 4 {
-		redacted += secret[len(secret)-4:]
-	}
-	base := strings.TrimRight(strings.TrimSpace(publicURL), "/")
-	if base == "" {
-		return "/api/kommo/webhook/" + redacted
-	}
-	return base + "/api/kommo/webhook/" + redacted
-}
-
-func (s *Server) integrationOutboxSummary(ctx context.Context, instanceID uuid.UUID) (fiber.Map, error) {
-	rows, err := s.repos.DB().Query(ctx, `
-		SELECT k.operation,
-		       COALESCE(k.account_id::text, ''),
-		       COALESCE(a.name, ''),
-		       COUNT(*) AS total,
-		       COUNT(*) FILTER (WHERE k.processing_started_at IS NULL) AS pending,
-		       COUNT(*) FILTER (WHERE k.processing_started_at IS NOT NULL AND COALESCE(k.last_error, '') = '') AS processing,
-		       COUNT(*) FILTER (WHERE COALESCE(k.last_error, '') <> '') AS errored,
-		       COUNT(*) FILTER (WHERE k.attempts > 0) AS retried,
-		       COALESCE(MIN(k.enqueued_at)::text, ''),
-		       COALESCE(MAX(k.last_error), '')
-		FROM kommo_push_outbox k
-		LEFT JOIN accounts a ON a.id = k.account_id
-		WHERE k.integration_instance_id IS NOT DISTINCT FROM $1
-		GROUP BY k.operation, k.account_id, a.name
-		ORDER BY total DESC, k.operation ASC
-	`, instanceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]fiber.Map, 0)
-	totals := fiber.Map{"total": int64(0), "pending": int64(0), "processing": int64(0), "errored": int64(0), "retried": int64(0)}
-	for rows.Next() {
-		var operation, accountID, accountName, oldest, lastError string
-		var total, pending, processing, errored, retried int64
-		if err := rows.Scan(&operation, &accountID, &accountName, &total, &pending, &processing, &errored, &retried, &oldest, &lastError); err != nil {
-			return nil, err
-		}
-		items = append(items, fiber.Map{
-			"operation":    operation,
-			"account_id":   accountID,
-			"account_name": accountName,
-			"total":        total,
-			"pending":      pending,
-			"processing":   processing,
-			"errored":      errored,
-			"retried":      retried,
-			"oldest_at":    oldest,
-			"last_error":   lastError,
-		})
-		totals["total"] = totals["total"].(int64) + total
-		totals["pending"] = totals["pending"].(int64) + pending
-		totals["processing"] = totals["processing"].(int64) + processing
-		totals["errored"] = totals["errored"].(int64) + errored
-		totals["retried"] = totals["retried"].(int64) + retried
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return fiber.Map{"items": items, "totals": totals}, nil
-}
-
-// ─────────────────────────────────────────────────────────
-// Health Check Endpoints
-// ─────────────────────────────────────────────────────────
 
 // handleHealthCheck is a deep health probe that checks all dependencies.
 // Returns 200 with "healthy" if all systems are operational,

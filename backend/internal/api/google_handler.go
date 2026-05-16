@@ -2,16 +2,22 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/naperu/kiri/internal/domain"
 	googleclient "github.com/naperu/kiri/internal/google"
 )
+
+const googleOAuthStatePrefix = "oauth:google:state:"
 
 // --- Google Contacts Integration Handlers ---
 
@@ -20,8 +26,22 @@ func (s *Server) handleGoogleAuthURL(c *fiber.Ctx) error {
 	if s.googleClient == nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Google integration not configured"})
 	}
+	if s.cache == nil {
+		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Session service unavailable"})
+	}
 	accountID := c.Locals("account_id").(uuid.UUID)
-	state := accountID.String()
+	userID := c.Locals("user_id").(uuid.UUID)
+	state, err := newGoogleOAuthState()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "Could not create OAuth state"})
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"account_id": accountID.String(),
+		"user_id":    userID.String(),
+	})
+	if err := s.cache.Set(c.Context(), googleOAuthStatePrefix+state, payload, 10*time.Minute); err != nil {
+		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Could not persist OAuth state"})
+	}
 	url := s.googleClient.GetAuthURL(state)
 	return c.JSON(fiber.Map{"success": true, "url": url})
 }
@@ -42,9 +62,34 @@ func (s *Server) handleGoogleCallback(c *fiber.Ctx) error {
 		return redirectErr("missing code or state")
 	}
 
-	accountID, err := uuid.Parse(state)
+	if s.cache == nil {
+		return redirectErr("Session service unavailable")
+	}
+	stateData, err := s.cache.Get(c.Context(), googleOAuthStatePrefix+state)
+	if err != nil || stateData == nil {
+		return redirectErr("OAuth state inválido o vencido")
+	}
+	_ = s.cache.Del(c.Context(), googleOAuthStatePrefix+state)
+
+	var statePayload struct {
+		AccountID string `json:"account_id"`
+		UserID    string `json:"user_id"`
+	}
+	if err := json.Unmarshal(stateData, &statePayload); err != nil {
+		return redirectErr("OAuth state corrupto")
+	}
+
+	accountID, err := uuid.Parse(statePayload.AccountID)
 	if err != nil {
 		return redirectErr("invalid state")
+	}
+	userID, err := uuid.Parse(statePayload.UserID)
+	if err != nil {
+		return redirectErr("invalid user state")
+	}
+	hasAccess, err := s.repos.UserAccount.Exists(c.Context(), userID, accountID)
+	if err != nil || !hasAccess {
+		return redirectErr("Usuario sin acceso a la cuenta")
 	}
 
 	// Exchange code for tokens
@@ -111,6 +156,14 @@ func (s *Server) handleGoogleCallback(c *fiber.Ctx) error {
 	return c.Redirect("/dashboard/settings?tab=integrations&google=connected")
 }
 
+func newGoogleOAuthState() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
 // handleGoogleDisconnect disconnects Google Contacts from the account
 func (s *Server) handleGoogleDisconnect(c *fiber.Ctx) error {
 	accountID := c.Locals("account_id").(uuid.UUID)
@@ -146,15 +199,15 @@ func (s *Server) handleGoogleStatus(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"success":        true,
-		"connected":      connected,
-		"email":          account.GoogleEmail,
-		"group_id":       account.GoogleContactGroupID,
-		"connected_at":   account.GoogleConnectedAt,
-		"sync_limit":     account.GoogleSyncLimit,
-		"sync_count":     syncCount,
-		"configured":     s.googleClient != nil,
-		"token_valid":    tokenValid,
+		"success":      true,
+		"connected":    connected,
+		"email":        account.GoogleEmail,
+		"group_id":     account.GoogleContactGroupID,
+		"connected_at": account.GoogleConnectedAt,
+		"sync_limit":   account.GoogleSyncLimit,
+		"sync_count":   syncCount,
+		"configured":   s.googleClient != nil,
+		"token_valid":  tokenValid,
 	})
 }
 
@@ -541,11 +594,19 @@ func (s *Server) syncContactToGoogle(ctx context.Context, accountID, contactID u
 		}
 	}
 	customName, contactName, phone := "<nil>", "<nil>", "<nil>"
-	if contact.CustomName != nil { customName = *contact.CustomName }
-	if contact.Name != nil { contactName = *contact.Name }
-	if contact.Phone != nil { phone = *contact.Phone }
+	if contact.CustomName != nil {
+		customName = *contact.CustomName
+	}
+	if contact.Name != nil {
+		contactName = *contact.Name
+	}
+	if contact.Phone != nil {
+		phone = *contact.Phone
+	}
 	resName := "<nil>"
-	if contact.GoogleResourceName != nil { resName = *contact.GoogleResourceName }
+	if contact.GoogleResourceName != nil {
+		resName = *contact.GoogleResourceName
+	}
 	log.Printf("[GOOGLE] Syncing contact %s (custom_name=%q, name=%q, phone=%s) → sending name=%q to Google resource=%s",
 		contactID, customName, contactName, phone, nameToSend, resName)
 

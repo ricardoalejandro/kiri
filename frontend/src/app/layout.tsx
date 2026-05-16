@@ -1,9 +1,8 @@
 import type { Metadata } from 'next'
-import { headers } from 'next/headers'
 import './globals.css'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://kiri.naperu.cloud'
-const MARKETING_URL = process.env.NEXT_PUBLIC_MARKETING_URL || 'https://landing.kiri.naperu.cloud'
+const MARKETING_URL = process.env.NEXT_PUBLIC_MARKETING_URL || APP_URL
 
 export const metadata: Metadata = {
   title: 'Kiri CRM - WhatsApp Business',
@@ -27,8 +26,7 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  const host = headers().get('host')?.split(':')[0].toLowerCase()
-  const canonicalUrl = host === 'landing.kiri.naperu.cloud' ? MARKETING_URL : APP_URL
+  const canonicalUrl = APP_URL
 
   return (
     <html lang="es" className="h-full">

@@ -3,9 +3,7 @@ package config
 import (
 	"log"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 )
 
 type Config struct {
@@ -25,22 +23,7 @@ type Config struct {
 	MinioBucket    string
 	MinioUseSSL    bool
 	MinioPublicURL string
-	// Kommo CRM
-	KommoSubdomain    string
-	KommoClientID     string
-	KommoClientSecret string
-	KommoAccessToken  string
-	KommoRedirectURI  string
-	KommoWebhookSecret string
-	KommoProxyURL      string
-	// Kommo Outbox (batched push worker)
-	// When enabled, pushes to Kommo are coalesced and flushed in bulk PATCHes
-	// (up to batch size) every flush interval. Required for multi-account scale.
-	KommoOutboxEnabled       bool
-	KommoOutboxBatchSize     int
-	KommoOutboxFlushInterval time.Duration
 	// PublicURL is the public URL of the Kiri backend (e.g., https://kiri.naperu.cloud)
-	// Used for webhook auto-registration with Kommo.
 	PublicURL string
 	// AI Assistant
 	GeminiAPIKey string
@@ -59,34 +42,24 @@ func Load() *Config {
 	}
 
 	return &Config{
-		DatabaseURL:    getEnv("DATABASE_URL", "postgres://kiri:kiri_secret_2026@localhost:5432/kiri?sslmode=disable"),
-		RedisURL:       getEnv("REDIS_URL", "redis://localhost:6379"),
-		JWTSecret:      getEnv("JWT_SECRET", "kiri_jwt_secret_change_in_production_2026"),
-		Port:           getEnv("PORT", "8080"),
-		Env:            getEnv("ENV", "development"),
-		AdminUser:      getEnv("ADMIN_USER", "admin"),
-		AdminPassword:  getEnv("ADMIN_PASSWORD", "kiri123"),
-		AdminEmail:     getEnv("ADMIN_EMAIL", "admin@kiri.local"),
-		CORSOrigins:    origins,
-		MinioEndpoint:  getEnv("MINIO_ENDPOINT", "localhost:9000"),
-		MinioAccessKey: getEnv("MINIO_ACCESS_KEY", "kiriadmin"),
-		MinioSecretKey: getEnv("MINIO_SECRET_KEY", "kiriadmin"),
-		MinioBucket:    getEnv("MINIO_BUCKET", "kiri-media"),
-		MinioUseSSL:    getEnv("MINIO_USE_SSL", "false") == "true",
-		MinioPublicURL: getEnv("MINIO_PUBLIC_URL", "http://localhost:9000"),
-		KommoSubdomain:    getEnv("KOMMO_SUBDOMAIN", ""),
-		KommoClientID:     getEnv("KOMMO_CLIENT_ID", ""),
-		KommoClientSecret: getEnv("KOMMO_CLIENT_SECRET", ""),
-		KommoAccessToken:  getEnv("KOMMO_ACCESS_TOKEN", ""),
-		KommoRedirectURI:  getEnv("KOMMO_REDIRECT_URI", ""),
-		KommoWebhookSecret: getEnv("KOMMO_WEBHOOK_SECRET", ""),
-		KommoProxyURL:      getEnv("KOMMO_PROXY_URL", getEnv("MEDIA_SOCKS5_PROXY", "")),
-		KommoOutboxEnabled:       getEnvBool("KOMMO_OUTBOX_ENABLED", true),
-		KommoOutboxBatchSize:     getEnvInt("KOMMO_OUTBOX_BATCH_SIZE", 250),
-		KommoOutboxFlushInterval: getEnvDuration("KOMMO_OUTBOX_FLUSH_INTERVAL", 2*time.Second),
-		PublicURL:           getEnv("PUBLIC_URL", ""),
-		GeminiAPIKey:      getEnv("GEMINI_API_KEY", ""),
-		GroqAPIKey:        getEnv("GROQ_API_KEY", ""),
+		DatabaseURL:        getEnv("DATABASE_URL", "postgres://kiri:kiri_secret_2026@localhost:5432/kiri?sslmode=disable"),
+		RedisURL:           getEnv("REDIS_URL", "redis://localhost:6379"),
+		JWTSecret:          getEnv("JWT_SECRET", "kiri_jwt_secret_change_in_production_2026"),
+		Port:               getEnv("PORT", "8080"),
+		Env:                getEnv("ENV", "development"),
+		AdminUser:          getEnv("ADMIN_USER", "admin"),
+		AdminPassword:      getEnv("ADMIN_PASSWORD", "kiri123"),
+		AdminEmail:         getEnv("ADMIN_EMAIL", "admin@kiri.local"),
+		CORSOrigins:        origins,
+		MinioEndpoint:      getEnv("MINIO_ENDPOINT", "localhost:9000"),
+		MinioAccessKey:     getEnv("MINIO_ACCESS_KEY", "kiriadmin"),
+		MinioSecretKey:     getEnv("MINIO_SECRET_KEY", "kiriadmin"),
+		MinioBucket:        getEnv("MINIO_BUCKET", "kiri-media"),
+		MinioUseSSL:        getEnv("MINIO_USE_SSL", "false") == "true",
+		MinioPublicURL:     getEnv("MINIO_PUBLIC_URL", "http://localhost:9000"),
+		PublicURL:          getEnv("PUBLIC_URL", ""),
+		GeminiAPIKey:       getEnv("GEMINI_API_KEY", ""),
+		GroqAPIKey:         getEnv("GROQ_API_KEY", ""),
 		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURI:  getEnv("GOOGLE_REDIRECT_URI", ""),
@@ -98,38 +71,6 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
-}
-
-func getEnvBool(key string, defaultValue bool) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	if v == "" {
-		return defaultValue
-	}
-	return v == "1" || v == "true" || v == "yes" || v == "on"
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return defaultValue
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		return defaultValue
-	}
-	return n
-}
-
-func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return defaultValue
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil || d <= 0 {
-		return defaultValue
-	}
-	return d
 }
 
 func (c *Config) IsDevelopment() bool {
@@ -145,10 +86,34 @@ func (c *Config) Validate() {
 	if !c.IsProduction() {
 		return
 	}
+	if c.DatabaseURL == "" || strings.Contains(c.DatabaseURL, "kiri_secret_2026") {
+		log.Fatal("[CONFIG] FATAL: DATABASE_URL is missing or using an unsafe default in production.")
+	}
 	if c.JWTSecret == "kiri_jwt_secret_change_in_production_2026" {
 		log.Fatal("[CONFIG] FATAL: JWT_SECRET is using the default value in production. Set a secure JWT_SECRET environment variable.")
 	}
+	if len(c.JWTSecret) < 32 {
+		log.Fatal("[CONFIG] FATAL: JWT_SECRET must be at least 32 characters in production.")
+	}
 	if c.AdminPassword == "kiri123" {
 		log.Fatal("[CONFIG] FATAL: ADMIN_PASSWORD is using the default value in production. Set a secure ADMIN_PASSWORD environment variable.")
+	}
+	if len(c.AdminPassword) < 12 {
+		log.Fatal("[CONFIG] FATAL: ADMIN_PASSWORD must be at least 12 characters in production.")
+	}
+	if c.MinioSecretKey == "" || c.MinioSecretKey == "kiriadmin" {
+		log.Fatal("[CONFIG] FATAL: MINIO_SECRET_KEY/MINIO_ROOT_PASSWORD is missing or using an unsafe default in production.")
+	}
+	if c.PublicURL == "" || !strings.HasPrefix(c.PublicURL, "https://") {
+		log.Fatal("[CONFIG] FATAL: PUBLIC_URL must be an https:// URL in production.")
+	}
+	for _, origin := range c.CORSOrigins {
+		origin = strings.TrimSpace(origin)
+		if strings.Contains(origin, "localhost") || strings.Contains(origin, "127.0.0.1") || strings.HasPrefix(origin, "http://") {
+			log.Fatalf("[CONFIG] FATAL: CORS_ORIGINS contains non-production origin %q.", origin)
+		}
+	}
+	if c.GoogleClientID != "" && c.GoogleRedirectURI == "" {
+		log.Fatal("[CONFIG] FATAL: GOOGLE_REDIRECT_URI is required when GOOGLE_CLIENT_ID is configured.")
 	}
 }

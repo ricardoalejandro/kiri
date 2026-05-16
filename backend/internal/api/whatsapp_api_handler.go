@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/naperu/kiri/internal/domain"
-	"github.com/naperu/kiri/internal/kommo"
+	phoneutil "github.com/naperu/kiri/internal/phone"
 	"github.com/naperu/kiri/internal/ws"
 )
 
@@ -219,7 +219,7 @@ func (s *Server) processWhatsAppCloudWebhook(ctx context.Context, payload cloudW
 }
 
 func (s *Server) processCloudAPIMessage(ctx context.Context, device *domain.Device, contactName string, message cloudWebhookMessage) error {
-	phone := kommo.NormalizePhone(message.From)
+	phone := phoneutil.Normalize(message.From)
 	if phone == "" {
 		phone = message.From
 	}

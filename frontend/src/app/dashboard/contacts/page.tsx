@@ -22,6 +22,7 @@ import ChatPanel from '@/components/chat/ChatPanel'
 import FormulaEditor from '@/components/FormulaEditor'
 import BulkGenerateDocumentModal from '@/components/BulkGenerateDocumentModal'
 import { subscribeWebSocket } from '@/lib/api'
+import { downloadCsv } from '@/utils/csv'
 import type { Lead } from '@/types/contact'
 import type { Chat } from '@/types/chat'
 import type { CustomFieldDefinition, CustomFieldValue, CustomFieldFilter } from '@/types/custom-field'
@@ -69,7 +70,6 @@ interface Contact {
   notes: string | null
   source: string | null
   is_group: boolean
-  kommo_id: number | null
   created_at: string
   updated_at: string
   last_activity: string | null
@@ -158,7 +158,6 @@ function contactToLead(c: Contact): Lead {
     stage_name: null,
     stage_color: null,
     stage_position: null,
-    kommo_id: c.kommo_id ?? null,
     is_archived: false,
     is_blocked: false,
     archived_at: null,
@@ -172,9 +171,7 @@ function contactToLead(c: Contact): Lead {
   } as unknown as Lead
 }
 
-export default function ContactsPage() {
-  const kommoEnabled = typeof window !== 'undefined' && localStorage.getItem('kommo_enabled') === 'true'
-  const [contacts, setContacts] = useState<Contact[]>([])
+export default function ContactsPage() {  const [contacts, setContacts] = useState<Contact[]>([])
   const [devices, setDevices] = useState<Device[]>([])
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
@@ -1071,7 +1068,6 @@ export default function ContactsPage() {
       if (!data.success) return
 
       const allContacts: Contact[] = data.contacts || []
-      const { utils, writeFile } = await import('xlsx')
       const rows = allContacts.map(c => {
         const row: Record<string, string> = {
           'telefono': c.phone || '',
@@ -1090,22 +1086,7 @@ export default function ContactsPage() {
         return row
       })
 
-      if (exportFormat === 'excel') {
-        const wb = utils.book_new()
-        const ws = utils.json_to_sheet(rows)
-        utils.book_append_sheet(wb, ws, 'Contactos')
-        writeFile(wb, `contactos_${format(new Date(), 'yyyy-MM-dd')}.xlsx`)
-      } else {
-        const ws = utils.json_to_sheet(rows)
-        const csv = utils.sheet_to_csv(ws)
-        const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `contactos_${format(new Date(), 'yyyy-MM-dd')}.csv`
-        a.click()
-        URL.revokeObjectURL(url)
-      }
+      downloadCsv(rows, `contactos_${format(new Date(), 'yyyy-MM-dd')}.csv`)
       setShowExportModal(false)
     } catch (err) {
       console.error('Export failed:', err)
@@ -1967,9 +1948,9 @@ export default function ContactsPage() {
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-500 hidden md:table-cell">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                        kommoEnabled && contact.source === 'kommo' ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'
+                        'bg-emerald-50 text-emerald-600'
                       }`}>
-                        {kommoEnabled ? (contact.source || 'whatsapp') : 'whatsapp'}
+                        whatsapp
                       </span>
                     </td>
                     <td className="px-4 py-3 hidden md:table-cell">
@@ -2572,13 +2553,11 @@ export default function ContactsPage() {
             notes: c.notes || '',
             tags: c.tags || [],
             structured_tags: c.structured_tags || null,
-            kommo_id: c.kommo_id,
             is_archived: false,
             archived_at: null,
             is_blocked: false,
             blocked_at: null,
             block_reason: '',
-            kommo_deleted_at: null,
             assigned_to: '',
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -2606,7 +2585,7 @@ export default function ContactsPage() {
                 <div className="flex rounded-lg border border-slate-200 overflow-hidden">
                   <button onClick={() => setExportFormat('excel')}
                     className={`flex-1 px-3 py-2 text-sm font-medium transition ${exportFormat === 'excel' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
-                    Excel (.xlsx)
+                    CSV seguro
                   </button>
                   <button onClick={() => setExportFormat('csv')}
                     className={`flex-1 px-3 py-2 text-sm font-medium transition ${exportFormat === 'csv' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
