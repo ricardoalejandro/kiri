@@ -110,7 +110,6 @@ export default function CreateContactModal({ open, onClose, onSuccess }: Props) 
           company: form.company.trim(),
           dni: form.dni.trim(),
           birth_date: form.birth_date || undefined,
-          notes: form.notes.trim(),
           tags: [...existingTagNames, ...customTagNames],
           tag_ids: realTagIds,
         }),
@@ -223,11 +222,6 @@ export default function CreateContactModal({ open, onClose, onSuccess }: Props) 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Fecha de nacimiento</label>
                 <input type="date" value={form.birth_date} onChange={e => handleChange('birth_date', e.target.value)} className={inputCls} />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Notas</label>
-                <textarea placeholder="Notas adicionales..." value={form.notes} onChange={e => handleChange('notes', e.target.value)} rows={3} className={`${inputCls} resize-none`} />
               </div>
 
               {/* Tags */}

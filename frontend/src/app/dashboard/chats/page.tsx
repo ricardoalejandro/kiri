@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Search, Plus, X, Trash2, CheckSquare, Square, MessageCircle, ShieldBan, Heart, ChevronDown, ChevronUp, MoreVertical, Archive, Tag, CheckCheck } from 'lucide-react'
+import { Search, Plus, X, Trash2, CheckSquare, Square, MessageCircle, ShieldBan, Heart, ChevronDown, ChevronUp, MoreVertical, Archive, CheckCheck, Smartphone } from 'lucide-react'
 import { formatTime } from '@/utils/format'
 import { subscribeWebSocket } from '@/lib/api'
 import DeviceSelector from '@/components/chat/DeviceSelector'
@@ -59,7 +59,7 @@ export default function ChatsPage() {
   const chatVirtualizer = useVirtualizer({
     count: chats.length,
     getScrollElement: () => chatListRef.current,
-    estimateSize: () => 80,
+    estimateSize: () => 70,
     overscan: 10,
   })
 
@@ -344,17 +344,17 @@ export default function ChatsPage() {
                     </div>
                 </div>
             ) : (
-                <div className="h-[59px] px-5 flex items-center gap-3 bg-[#f0f2f5]">
-                    <div className="w-10 h-10 rounded-full bg-[#00a884] flex items-center justify-center text-white font-bold shadow-sm">
-                      K
+                <div className="h-[59px] px-4 flex items-center gap-3 bg-[#f0f2f5]">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-[#00a884] flex items-center justify-center text-white font-bold text-sm shadow-sm">
+                        K
+                      </div>
+                      <div className="min-w-0">
+                        <h1 className="text-[20px] font-semibold text-[#111b21] leading-tight tracking-[-0.01em]">Kiri</h1>
+                        <p className="text-[11px] text-[#667781] leading-tight">Chats</p>
+                      </div>
                     </div>
-                    <h1 className="text-[21px] font-semibold text-[#111b21] tracking-[-0.01em]">Kiri</h1>
                     <div className="flex-1" />
-                    <DeviceSelector
-                        devices={devices}
-                        selectedDeviceIds={filterDevices}
-                        onDeviceChange={setFilterDevices}
-                    />
                     <button onClick={() => setShowNewChatModal(true)} className="p-2 text-[#54656f] hover:bg-black/5 rounded-full transition-colors" title="Nuevo chat">
                         <Plus className="w-5 h-5" />
                     </button>
@@ -362,6 +362,22 @@ export default function ChatsPage() {
                         <MoreVertical className="w-5 h-5" />
                     </button>
                 </div>
+            )}
+
+            {!selectionMode && (
+              <div className="px-4 pt-3 bg-white">
+                <div className="flex items-center gap-2 rounded-xl border border-[#e9edef] bg-white px-3 py-2 shadow-[0_1px_1px_rgba(11,20,26,0.03)]">
+                  <Smartphone className="w-4 h-4 text-[#00a884] shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[#667781] leading-none mb-1">Dispositivo</p>
+                    <DeviceSelector
+                      devices={devices}
+                      selectedDeviceIds={filterDevices}
+                      onDeviceChange={setFilterDevices}
+                    />
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Search */}
@@ -403,12 +419,6 @@ export default function ChatsPage() {
                 >
                     No leídos
                 </button>
-                <button className="shrink-0 px-4 py-2 rounded-full text-sm font-medium border bg-white text-[#54656f] border-[#d1d7db] hover:bg-[#f5f6f6]">
-                  Favoritos
-                </button>
-                <button className="shrink-0 px-4 py-2 rounded-full text-sm font-medium border bg-white text-[#54656f] border-[#d1d7db] hover:bg-[#f5f6f6]">
-                  Grupos
-                </button>
                 <button
                     data-testid="filter-reaction-toggle"
                     onClick={() => setFilterHasReaction(!filterHasReaction)}
@@ -419,8 +429,8 @@ export default function ChatsPage() {
                     }`}
                     title="Filtrar chats con reacciones"
                 >
-                  <Tag className="w-3.5 h-3.5" />
-                    Etiquetas
+                  <Heart className={`w-3.5 h-3.5 ${filterHasReaction ? 'fill-current' : ''}`} />
+                    Con reacción
                 </button>
             </div>
 
@@ -574,7 +584,7 @@ export default function ChatsPage() {
                             if (selectionMode) toggleChatSelection(chat.id)
                             else setSelectedChat(chat)
                         }}
-                        className={`group min-h-[72px] px-4 py-2 flex items-center gap-3 cursor-pointer border-b transition-colors duration-150 relative ${selectedChat?.id === chat.id ? 'bg-[#f0f2f5] border-[#f0f2f5]' : 'border-[#f0f2f5] hover:bg-[#f5f6f6]'}`}
+                        className={`group min-h-[66px] px-4 py-1.5 flex items-center gap-3 cursor-pointer border-b transition-colors duration-150 relative ${selectedChat?.id === chat.id ? 'bg-[#f0f2f5] border-[#f0f2f5]' : 'border-[#f0f2f5] hover:bg-[#f5f6f6]'}`}
                     >
                         {selectionMode && (
                              <div className={`shrink-0 mt-2 ${selectedChats.has(chat.id) ? 'text-emerald-600' : 'text-slate-300'}`}>
@@ -584,13 +594,13 @@ export default function ChatsPage() {
 
                         <div className="relative shrink-0">
                              {chat.contact_avatar_url ? (
-                              <img src={chat.contact_avatar_url} alt="" className="w-12 h-12 rounded-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden') }} />
+                              <img src={chat.contact_avatar_url} alt="" className="w-11 h-11 rounded-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden') }} />
                              ) : null}
-                            <div className={`w-12 h-12 bg-[#dfe5e7] rounded-full flex items-center justify-center ${chat.contact_avatar_url ? 'hidden' : ''}`}>
-                                <span className="text-[#54656f] font-semibold text-lg">{getChatDisplayName(chat).charAt(0).toUpperCase()}</span>
+                            <div className={`w-11 h-11 bg-[#dfe5e7] rounded-full flex items-center justify-center ${chat.contact_avatar_url ? 'hidden' : ''}`}>
+                                <span className="text-[#54656f] font-semibold text-base">{getChatDisplayName(chat).charAt(0).toUpperCase()}</span>
                              </div>
                              {chat.unread_count > 0 && (
-                              <div className="absolute -top-0.5 -right-0.5 bg-[#25d366] text-white text-[11px] font-bold h-5 min-w-5 px-1.5 rounded-full flex items-center justify-center ring-2 ring-white tabular-nums">
+                              <div className="absolute -top-0.5 -right-0.5 bg-[#25d366] text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center ring-2 ring-white tabular-nums">
                                     {chat.unread_count}
                                 </div>
                              )}
@@ -598,7 +608,7 @@ export default function ChatsPage() {
 
                         <div className="flex-1 min-w-0">
                             <div className="flex justify-between items-baseline mb-0.5 gap-2">
-                                <h3 className={`text-[17px] leading-6 truncate pr-2 ${chat.unread_count > 0 ? 'font-semibold text-[#111b21]' : 'font-normal text-[#111b21]'}`}>
+                                <h3 className={`text-[15.5px] leading-5 truncate pr-2 ${chat.unread_count > 0 ? 'font-semibold text-[#111b21]' : 'font-normal text-[#111b21]'}`}>
                                     {getChatDisplayName(chat)}
                                 </h3>
                                 <span className={`text-xs whitespace-nowrap ${chat.unread_count > 0 ? 'text-[#00a884] font-semibold' : 'text-[#667781]'}`}>
@@ -607,19 +617,19 @@ export default function ChatsPage() {
                             </div>
                             <div className="flex items-center gap-1.5 min-w-0 pr-2">
                               {chat.last_message && <CheckCheck className="w-4 h-4 text-[#53bdeb] shrink-0" />}
-                              <span className={`text-sm truncate block ${chat.unread_count > 0 ? 'font-medium text-[#111b21]' : 'text-[#667781]'}`}>
+                              <span className={`text-[13px] truncate block ${chat.unread_count > 0 ? 'font-medium text-[#111b21]' : 'text-[#667781]'}`}>
                                     {chat.last_message || 'Sin mensajes'}
                                 </span>
                             </div>
                             {/* Device & Phone Labels */}
-                            <div className="flex items-center gap-2 mt-1">
+                            <div className="flex items-center gap-1.5 mt-0.5">
                                  {chat.device_name && (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#f0f2f5] text-[#667781] max-w-[120px] truncate">
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-medium bg-[#f0f2f5] text-[#667781] max-w-[110px] truncate">
                                         {chat.device_name}
                                     </span>
                                  )}
                                  {formatPhone(chat.jid, chat.contact_phone) && formatPhone(chat.jid, chat.contact_phone) !== getChatDisplayName(chat) && (
-                                    <span className="text-[10px] text-slate-400 truncate">
+                                    <span className="text-[9.5px] text-slate-400 truncate">
                                         {formatPhone(chat.jid, chat.contact_phone)}
                                     </span>
                                  )}

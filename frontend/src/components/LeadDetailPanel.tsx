@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Phone, Mail, User, Calendar, MessageCircle, Trash2, ChevronDown,
-  Clock, FileText, X, Maximize2, Building2, Save, Edit2, Plus, RefreshCw, XCircle, CreditCard, Cake, Archive, ShieldBan, ArchiveRestore, ShieldOff, Smartphone, Cloud, CloudOff, MapPin, Briefcase, Map, SlidersHorizontal, LayoutList
+  Clock, FileText, X, Maximize2, Building2, Edit2, Plus, RefreshCw, XCircle, CreditCard, Cake, Archive, ShieldBan, ArchiveRestore, ShieldOff, Smartphone, Cloud, CloudOff, MapPin, Briefcase, Map, SlidersHorizontal, LayoutList
 } from 'lucide-react'
 import { formatDistanceToNow, format, parseISO } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -137,11 +137,6 @@ export default function LeadDetailPanel({
   const [editValues, setEditValues] = useState<Record<string, string>>({})
   const [savingField, setSavingField] = useState(false)
   const savingFieldRef = useRef<string | null>(null)
-
-  // Notes
-  const [editingNotes, setEditingNotes] = useState(false)
-  const [notesValue, setNotesValue] = useState(lead.notes || '')
-  const [savingNotes, setSavingNotes] = useState(false)
 
   // Observations
   const [observations, setObservations] = useState<Observation[]>([])
@@ -300,9 +295,7 @@ export default function LeadDetailPanel({
 
   // ─── Fetch observations when lead changes ──────────────
   useEffect(() => {
-    setNotesValue(lead.notes || '')
     setEditingField(null)
-    setEditingNotes(false)
     setObsDisplayCount(5)
     setActiveTab('general')
     fetchObservations(lead.id)
@@ -452,37 +445,6 @@ export default function LeadDetailPanel({
       setSavingField(false)
       setEditingField(null)
       setTimeout(() => { savingFieldRef.current = null }, 50)
-    }
-  }
-
-  const saveNotes = async () => {
-    setSavingNotes(true)
-    const token = localStorage.getItem('token')
-    try {
-      const endpoint = contactMode && contactId
-        ? `/api/contacts/${contactId}`
-        : `/api/leads/${lead.id}`
-      const res = await fetch(endpoint, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ notes: notesValue }),
-      })
-      const data = await res.json()
-      if (contactMode) {
-        const updated = { ...lead, notes: notesValue }
-        setLead(updated)
-        onLeadChange(updated)
-        if (data.success && data.contact) onContactUpdate?.(data.contact)
-      } else if (data.success && data.lead) {
-        const merged = { ...data.lead, structured_tags: data.lead.structured_tags || lead.structured_tags }
-        setLead(merged)
-        onLeadChange(merged)
-      }
-      setEditingNotes(false)
-    } catch (err) {
-      console.error('Failed to save notes:', err)
-    } finally {
-      setSavingNotes(false)
     }
   }
 
@@ -1296,38 +1258,6 @@ export default function LeadDetailPanel({
               ))}
             </div>
           </div>
-        )}
-
-        {/* Notes */}
-        {!eventMode && (
-        <div className="border-t border-slate-100 pt-4">
-          <div className="flex items-center justify-between mb-3">
-            <h5 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Notas</h5>
-            {editingNotes ? (
-              <button onClick={saveNotes} disabled={savingNotes} className="flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700">
-                <Save className="w-3.5 h-3.5" />
-                {savingNotes ? 'Guardando...' : 'Guardar'}
-              </button>
-            ) : (
-              <button onClick={() => { setEditingNotes(true); setNotesValue(lead.notes || '') }} className="flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700">
-                <Edit2 className="w-3.5 h-3.5" />
-                Editar
-              </button>
-            )}
-          </div>
-          {editingNotes ? (
-            <textarea
-              value={notesValue}
-              onChange={(e) => setNotesValue(e.target.value)}
-              className="w-full h-28 p-3 text-sm text-slate-800 border-2 border-emerald-500 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none placeholder:text-slate-400"
-              placeholder="Escribe notas sobre este lead..."
-            />
-          ) : (
-            <div className="text-sm text-slate-700 bg-slate-50 rounded-xl p-3 min-h-[50px] border border-slate-100">
-              {lead.notes || <span className="text-slate-400 italic">Sin notas</span>}
-            </div>
-          )}
-        </div>
         )}
 
         {/* Actions */}

@@ -1,13 +1,12 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { CSSProperties } from 'react'
 import {
-  Send, Paperclip, MoreVertical, Search, Phone, Video,
+  Send, Paperclip,
   ArrowLeft, Smile, Image as ImageIcon, FileText, X,
   Mic, Trash2, Reply, Check, CheckCheck, Download,
   CornerUpRight, Play, Pause, AlertCircle, BarChart3, User, EyeOff, RefreshCw,
-  Plus, Tag, LockKeyhole, ChevronDown
+  Plus, LockKeyhole
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -82,9 +81,6 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
     if (onContactInfoToggle) onContactInfoToggle(show)
     else setShowContactInfoLocal(show)
   }
-  const [showSearch, setShowSearch] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-
   // Forwarding
   const [forwardingMsg, setForwardingMsg] = useState<Message | null>(null)
   const [forwardSearch, setForwardSearch] = useState('')
@@ -105,6 +101,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
 
   // History sync
   const [syncingHistory, setSyncingHistory] = useState(false)
+  const [historySyncMessage, setHistorySyncMessage] = useState<string | null>(null)
 
   const cacheMessages = useCallback((targetChatId: string | null | undefined, nextMessages: Message[], nextHasMore = hasMoreMessages) => {
     if (!targetChatId) return
@@ -137,6 +134,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
   const handleRequestHistorySync = useCallback(async () => {
     if (!chatId || syncingHistory) return
     setSyncingHistory(true)
+    setHistorySyncMessage('Solicitando historial...')
     try {
       const token = localStorage.getItem('token')
       const res = await fetch(`/api/chats/${chatId}/sync-history`, {
@@ -147,11 +145,19 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Error solicitando historial')
       }
+      setHistorySyncMessage('Historial solicitado. Actualizando mensajes...')
+      setTimeout(() => {
+        fetchChatDetails()
+        setSyncingHistory(false)
+        setHistorySyncMessage(null)
+      }, 5000)
     } catch (err: any) {
       console.error('[HistorySync]', err)
+      setHistorySyncMessage(err?.message || 'No se pudo sincronizar el historial')
+      setSyncingHistory(false)
+      setTimeout(() => setHistorySyncMessage(null), 6000)
     } finally {
-      // Keep spinning for a bit — response comes async via WebSocket
-      setTimeout(() => setSyncingHistory(false), 15000)
+      // The backend may also emit history_sync_complete through WebSocket.
     }
   }, [chatId, syncingHistory])
 
@@ -333,6 +339,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
         } else if (eventType === 'history_sync_complete' && payload) {
           // History sync completed — reload messages to include historical ones
           setSyncingHistory(false)
+          setHistorySyncMessage(null)
           fetchChatDetails()
         } else if (eventType === 'message_reaction' && payload) {
           // Incoming reaction from contact or self echo
@@ -1070,17 +1077,6 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
       )
   }
 
-  const chatBackgroundStyle: CSSProperties = {
-    backgroundColor: '#efeae2',
-    backgroundImage: `
-      radial-gradient(circle at 16px 18px, rgba(134,150,160,0.08) 0 1.4px, transparent 1.5px),
-      radial-gradient(circle at 52px 42px, rgba(134,150,160,0.06) 0 2px, transparent 2.1px),
-      linear-gradient(45deg, transparent 0 45%, rgba(134,150,160,0.035) 45% 55%, transparent 55%),
-      linear-gradient(-45deg, transparent 0 46%, rgba(134,150,160,0.03) 46% 54%, transparent 54%)
-    `,
-    backgroundSize: '96px 96px, 120px 120px, 72px 72px, 88px 88px',
-  }
-
   return (
     <div className={`flex-1 flex flex-col min-h-0 overflow-hidden h-full ${className}`}>
          {/* Chat header */}
@@ -1138,33 +1134,12 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
 
               <div className="flex items-center gap-2">
                    <button
-                     onClick={() => setShowContactInfo(!showContactInfo)}
-                     className="hidden lg:inline-flex items-center gap-2 h-10 px-4 rounded-full border border-[#d1d7db] bg-white text-[#111b21] text-sm font-semibold hover:bg-[#f5f6f6] transition"
-                     title="Etiquetar chat"
-                   >
-                       <Tag className="w-4 h-4" />
-                       Etiquetar chat
-                       <ChevronDown className="w-4 h-4 text-[#54656f]" />
-                   </button>
-                   <button
                      onClick={handleRequestHistorySync}
                      disabled={syncingHistory}
                      className="p-2 text-[#54656f] hover:bg-black/5 rounded-full transition disabled:opacity-50"
                      title="Sincronizar historial de mensajes"
                    >
                        <RefreshCw className={`w-5 h-5 ${syncingHistory ? 'animate-spin' : ''}`} />
-                   </button>
-                   <button className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition" title="Videollamada">
-                       <Video className="w-5 h-5" />
-                   </button>
-                   <button className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition" title="Llamada">
-                       <Phone className="w-5 h-5" />
-                   </button>
-                   <button onClick={() => setShowSearch(!showSearch)} className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition">
-                       <Search className="w-5 h-5" />
-                   </button>
-                   <button className="p-2 text-[#111b21] hover:bg-black/5 rounded-full transition">
-                       <MoreVertical className="w-5 h-5" />
                    </button>
               </div>
          </div>
@@ -1175,9 +1150,19 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
              <div
                 ref={messagesContainerRef}
                 onScroll={handleMessagesScroll}
-                className="flex-1 overflow-y-auto px-[6.5%] py-4 space-y-1.5 relative"
-                style={chatBackgroundStyle}
+                className="flex-1 overflow-y-auto bg-[#efeae2] px-[6.5%] py-4 space-y-1.5 relative"
+                style={{
+                  backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")',
+                  backgroundRepeat: 'repeat'
+                }}
              >
+                  {historySyncMessage && (
+                    <div className="sticky top-2 z-10 flex justify-center">
+                      <span className="rounded-full bg-white/95 px-3 py-1.5 text-xs font-medium text-[#54656f] shadow-sm ring-1 ring-black/5">
+                        {historySyncMessage}
+                      </span>
+                    </div>
+                  )}
                   {loadingMore && (
                     <div className="flex justify-center py-3">
                       <div className="animate-spin rounded-full h-5 w-5 border-2 border-emerald-200 border-t-emerald-600" />

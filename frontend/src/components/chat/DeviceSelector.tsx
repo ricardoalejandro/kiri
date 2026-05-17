@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown, Smartphone, Check } from 'lucide-react'
+import { ChevronDown, Check } from 'lucide-react'
 
 interface Device {
   id: string
@@ -81,14 +81,13 @@ export default function DeviceSelector({
   }
 
   return (
-    <div className="relative" ref={dropdownRef}>
+    <div className="relative w-full" ref={dropdownRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg hover:border-green-500 focus:ring-2 focus:ring-green-500 focus:border-transparent min-w-[200px]"
+        className="flex w-full items-center gap-2 rounded-lg border border-transparent bg-white px-0 py-0.5 hover:border-green-200 focus:border-transparent focus:ring-2 focus:ring-green-500"
       >
-        <Smartphone className="w-4 h-4 text-green-600" />
-        <span className="flex-1 text-left text-sm font-medium text-gray-800 truncate">{getDisplayText()}</span>
-        <ChevronDown className={`w-4 h-4 text-gray-600 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <span className="flex-1 truncate text-left text-sm font-semibold text-[#111b21]">{getDisplayText()}</span>
+        <ChevronDown className={`h-4 w-4 text-[#667781] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {isOpen && (

@@ -683,7 +683,6 @@ export default function ContactsPage() {  const [contacts, setContacts] = useSta
           company: editForm.company || null,
           age: editForm.age ? parseInt(editForm.age) : null,
           tags: editForm.tags.split(',').map(t => t.trim()).filter(Boolean),
-          notes: editForm.notes || null,
           address: editForm.address || null,
         }),
       })
@@ -2236,16 +2235,6 @@ export default function ContactsPage() {  const [contacts, setContacts] = useSta
                   onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
                   className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-slate-900 placeholder:text-slate-400 text-sm"
                   placeholder="cliente, vip, urgente (separadas por coma)"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Notas</label>
-                <textarea
-                  value={editForm.notes}
-                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                  rows={3}
-                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-slate-900 placeholder:text-slate-400 text-sm"
-                  placeholder="Notas sobre este contacto..."
                 />
               </div>
               <div>

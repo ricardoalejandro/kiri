@@ -1082,7 +1082,6 @@ export default function LeadsPage() {
           name: formData.name,
           phone: formData.phone,
           email: formData.email,
-          notes: formData.notes,
           dni: formData.dni || undefined,
           birth_date: formData.birth_date || undefined,
           tags: formData.tags.split(',').map(t => t.trim()).filter(Boolean),
@@ -3489,16 +3488,6 @@ export default function LeadsPage() {
                   onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 text-sm text-slate-900 placeholder:text-slate-400"
                   placeholder="ventas, premium (separadas por coma)"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Notas</label>
-                <textarea
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  rows={3}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 text-sm text-slate-900 placeholder:text-slate-400 resize-none"
-                  placeholder="Notas adicionales..."
                 />
               </div>
             </div>
