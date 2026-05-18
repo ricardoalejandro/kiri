@@ -145,12 +145,7 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Error solicitando historial')
       }
-      setHistorySyncMessage('Historial solicitado. Actualizando mensajes...')
-      setTimeout(() => {
-        fetchChatDetails()
-        setSyncingHistory(false)
-        setHistorySyncMessage(null)
-      }, 5000)
+      setHistorySyncMessage('WhatsApp está preparando el historial de este chat...')
     } catch (err: any) {
       console.error('[HistorySync]', err)
       setHistorySyncMessage(err?.message || 'No se pudo sincronizar el historial')
@@ -234,6 +229,8 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
   }, [initialChat])
 
   useEffect(() => {
+    setSyncingHistory(false)
+    setHistorySyncMessage(null)
     if (chatId) {
       const cached = messagesCacheRef.current.get(chatId)
       if (cached) {
@@ -336,11 +333,33 @@ export default function ChatPanel({ chatId, deviceId, initialChat, onClose, clas
               if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
             }
           }
+        } else if (eventType === 'history_sync_started' && payload) {
+          if (!payload.chat_id || payload.chat_id === chatId) {
+            setSyncingHistory(true)
+            setHistorySyncMessage(payload.message || 'WhatsApp está preparando el historial de este chat...')
+          }
         } else if (eventType === 'history_sync_complete' && payload) {
-          // History sync completed — reload messages to include historical ones
-          setSyncingHistory(false)
-          setHistorySyncMessage(null)
-          fetchChatDetails()
+          if (!payload.chat_id || payload.chat_id === chatId) {
+            const saved = Number(payload.messages_saved || 0)
+            const isPartial = payload.status === 'partial'
+            fetchChatDetails()
+            setSyncingHistory(isPartial)
+            if (isPartial) {
+              setHistorySyncMessage(payload.message || `Se importaron ${saved} mensajes. Buscando más historial...`)
+            } else if (saved > 0) {
+              setHistorySyncMessage(`Historial actualizado: se importaron ${saved} mensajes.`)
+              setTimeout(() => setHistorySyncMessage(null), 6000)
+            } else {
+              setHistorySyncMessage(payload.message || 'WhatsApp no devolvió mensajes antiguos adicionales para este chat.')
+              setTimeout(() => setHistorySyncMessage(null), 8000)
+            }
+          }
+        } else if ((eventType === 'history_sync_timeout' || eventType === 'history_sync_failed') && payload) {
+          if (!payload.chat_id || payload.chat_id === chatId) {
+            setSyncingHistory(false)
+            setHistorySyncMessage(payload.error || payload.message || 'No se pudo sincronizar el historial.')
+            setTimeout(() => setHistorySyncMessage(null), 8000)
+          }
         } else if (eventType === 'message_reaction' && payload) {
           // Incoming reaction from contact or self echo
           if (chat && payload.chat_id === chat.id) {

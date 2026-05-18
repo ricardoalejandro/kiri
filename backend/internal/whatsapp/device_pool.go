@@ -46,6 +46,7 @@ const (
 	avatarExistingRefreshTTL = 7 * 24 * time.Hour
 	avatarMissingRefreshTTL  = 24 * time.Hour
 	avatarFetchTimeout       = 12 * time.Second
+	historySyncTimeout       = 45 * time.Second
 )
 
 // DeviceHealthMetrics tracks health-related counters per device
@@ -89,23 +90,24 @@ type DeviceInstance struct {
 // DevicePool manages multiple WhatsApp connections
 // onDemandSyncTarget tracks a pending on-demand history sync request
 type onDemandSyncTarget struct {
-	AccountID uuid.UUID
-	DeviceID  uuid.UUID
-	ChatID    uuid.UUID
-	ChatJID   string
+	AccountID   uuid.UUID
+	DeviceID    uuid.UUID
+	ChatID      uuid.UUID
+	ChatJID     string
+	RequestedAt time.Time
 }
 
 type DevicePool struct {
-	devices            map[uuid.UUID]*DeviceInstance
-	store              *sqlstore.Container
-	repos              *repository.Repositories
-	hub                *ws.Hub
-	cfg                *config.Config
-	storage            *storage.Storage
-	cache              *cache.Cache
-	mu                 sync.RWMutex
-	startTime          time.Time
-	onDemandSyncTarget *onDemandSyncTarget // currently active on-demand sync target for auto-chaining
+	devices             map[uuid.UUID]*DeviceInstance
+	store               *sqlstore.Container
+	repos               *repository.Repositories
+	hub                 *ws.Hub
+	cfg                 *config.Config
+	storage             *storage.Storage
+	cache               *cache.Cache
+	mu                  sync.RWMutex
+	startTime           time.Time
+	onDemandSyncTargets map[string]*onDemandSyncTarget // active on-demand sync targets by device/chat
 }
 
 // NewDevicePool creates a new device pool
@@ -127,12 +129,13 @@ func NewDevicePool(cfg *config.Config, repos *repository.Repositories, hub *ws.H
 	}
 
 	return &DevicePool{
-		devices:   make(map[uuid.UUID]*DeviceInstance),
-		store:     container,
-		repos:     repos,
-		hub:       hub,
-		cfg:       cfg,
-		startTime: time.Now(),
+		devices:             make(map[uuid.UUID]*DeviceInstance),
+		store:               container,
+		repos:               repos,
+		hub:                 hub,
+		cfg:                 cfg,
+		startTime:           time.Now(),
+		onDemandSyncTargets: make(map[string]*onDemandSyncTarget),
 	}, nil
 }
 
@@ -1630,6 +1633,8 @@ func (p *DevicePool) handleHistorySync(ctx context.Context, instance *DeviceInst
 	totalEmpty := 0
 	totalProtocol := 0
 	totalParseErr := 0
+	savedByChatID := make(map[uuid.UUID]int)
+	duplicatesByChatID := make(map[uuid.UUID]int)
 
 	for convIdx, conv := range evt.Data.Conversations {
 		convJID := conv.GetID()
@@ -1757,6 +1762,7 @@ func (p *DevicePool) handleHistorySync(ctx context.Context, instance *DeviceInst
 
 			if err := p.repos.Message.Create(ctx, msg); err != nil {
 				totalDuplicates++
+				duplicatesByChatID[chat.ID]++
 				// Debug: log details for small batches (ON_DEMAND, etc.)
 				if totalConversations <= 5 {
 					log.Printf("[HistorySync] SKIP msgID=%s ts=%s fromMe=%v type=%s err=%v",
@@ -1779,6 +1785,7 @@ func (p *DevicePool) handleHistorySync(ctx context.Context, instance *DeviceInst
 
 		// Update chat last message with the newest history message if chat is empty
 		if convSaved > 0 {
+			savedByChatID[chat.ID] += convSaved
 			// Ensure contact exists
 			p.repos.Contact.GetOrCreate(ctx, instance.AccountID, &instance.ID, chatJID, phone, "", "", false)
 
@@ -1789,55 +1796,164 @@ func (p *DevicePool) handleHistorySync(ctx context.Context, instance *DeviceInst
 	log.Printf("[HistorySync] Complete: saved=%d duplicates=%d groups=%d lidFail=%d empty=%d protocol=%d parseErr=%d conversations=%d",
 		totalSaved, totalDuplicates, totalGroups, totalLIDFail, totalEmpty, totalProtocol, totalParseErr, totalConversations)
 
-	// Notify frontend that history sync completed
+	// Notify frontend/cache for broad history syncs that are not tracked as on-demand chat requests.
 	if totalSaved > 0 {
 		if p.cache != nil {
 			_ = p.cache.DelPattern(context.Background(), "chats:"+instance.AccountID.String()+":*")
 		}
 		p.invalidateAccountMessageCaches(instance.AccountID)
-
-		p.hub.BroadcastToAccount(instance.AccountID, ws.EventHistorySyncComplete, map[string]interface{}{
-			"device_id":      instance.ID.String(),
-			"messages_saved": totalSaved,
-			"duplicates":     totalDuplicates,
-		})
 	}
 
 	// Auto-chain: if this was an ON_DEMAND response with saved messages, fire another request
 	// Only process on the device that owns the sync target to avoid duplicates
 	if syncType == "ON_DEMAND" {
+		deviceTargets := make([]onDemandSyncTarget, 0)
 		p.mu.RLock()
-		target := p.onDemandSyncTarget
+		for _, target := range p.onDemandSyncTargets {
+			if target.DeviceID == instance.ID {
+				deviceTargets = append(deviceTargets, *target)
+			}
+		}
 		p.mu.RUnlock()
 
-		// Only act if this device is the target device (avoids duplicate event processing)
-		if target != nil && target.DeviceID == instance.ID {
-			if totalSaved > 0 {
-				log.Printf("[HistorySync] Auto-chaining: requesting more messages for %s (saved %d in this batch)", target.ChatJID, totalSaved)
+		for _, target := range deviceTargets {
+			savedForTarget := savedByChatID[target.ChatID]
+			duplicatesForTarget := duplicatesByChatID[target.ChatID]
+			if savedForTarget > 0 {
+				p.hub.BroadcastToAccount(target.AccountID, ws.EventHistorySyncComplete, map[string]interface{}{
+					"chat_id":        target.ChatID.String(),
+					"device_id":      target.DeviceID.String(),
+					"messages_saved": savedForTarget,
+					"duplicates":     duplicatesForTarget,
+					"status":         "partial",
+					"message":        "Se importaron mensajes antiguos. Buscando más historial...",
+				})
+
+				log.Printf("[HistorySync] Auto-chaining: requesting more messages for %s (saved %d in this batch)", target.ChatJID, savedForTarget)
 				// Small delay to avoid hammering the phone
-				go func() {
+				go func(target onDemandSyncTarget) {
 					time.Sleep(3 * time.Second)
-					if err := p.RequestHistorySync(context.Background(), target.AccountID, target.DeviceID, target.ChatID, target.ChatJID); err != nil {
+					if err := p.requestHistorySync(context.Background(), target.AccountID, target.DeviceID, target.ChatID, target.ChatJID, true); err != nil {
+						p.mu.Lock()
+						delete(p.onDemandSyncTargets, historySyncTargetKey(target.DeviceID, target.ChatID))
+						p.mu.Unlock()
 						log.Printf("[HistorySync] Auto-chain failed: %v", err)
+						p.hub.BroadcastToAccount(target.AccountID, ws.EventHistorySyncFailed, map[string]interface{}{
+							"chat_id":   target.ChatID.String(),
+							"device_id": target.DeviceID.String(),
+							"status":    "failed",
+							"error":     err.Error(),
+						})
 					}
-				}()
+				}(target)
 			} else {
-				// No more messages to fetch — clear the target
 				p.mu.Lock()
-				p.onDemandSyncTarget = nil
+				delete(p.onDemandSyncTargets, historySyncTargetKey(target.DeviceID, target.ChatID))
 				p.mu.Unlock()
 				log.Printf("[HistorySync] On-demand sync complete — no more older messages available")
+				p.hub.BroadcastToAccount(target.AccountID, ws.EventHistorySyncComplete, map[string]interface{}{
+					"chat_id":        target.ChatID.String(),
+					"device_id":      target.DeviceID.String(),
+					"messages_saved": 0,
+					"duplicates":     duplicatesForTarget,
+					"status":         "complete",
+					"message":        "WhatsApp no devolvió mensajes antiguos adicionales para este chat",
+				})
 			}
-		} else if target != nil {
-			log.Printf("[HistorySync] Ignoring ON_DEMAND event from device %s (target device is %s)", instance.ID, target.DeviceID)
+		}
+	} else if totalSaved > 0 {
+		p.hub.BroadcastToAccount(instance.AccountID, ws.EventHistorySyncComplete, map[string]interface{}{
+			"device_id":      instance.ID.String(),
+			"messages_saved": totalSaved,
+			"duplicates":     totalDuplicates,
+			"status":         "complete",
+		})
+	} else {
+		p.mu.RLock()
+		hasTargetsForDevice := false
+		for _, target := range p.onDemandSyncTargets {
+			if target.DeviceID == instance.ID {
+				hasTargetsForDevice = true
+				break
+			}
+		}
+		p.mu.RUnlock()
+		if hasTargetsForDevice {
+			log.Printf("[HistorySync] Ignoring non-ON_DEMAND event from device %s while on-demand sync is pending", instance.ID)
 		}
 	}
+}
+
+func historySyncTargetKey(deviceID, chatID uuid.UUID) string {
+	return deviceID.String() + ":" + chatID.String()
+}
+
+func (p *DevicePool) resolveHistorySyncChatJID(ctx context.Context, jid types.JID) types.JID {
+	if jid.Server != types.DefaultUserServer {
+		return jid
+	}
+
+	var lid string
+	err := p.repos.DB().QueryRow(ctx, `SELECT lid FROM whatsmeow_lid_map WHERE pn = $1 LIMIT 1`, jid.User).Scan(&lid)
+	if err != nil || strings.TrimSpace(lid) == "" {
+		return jid
+	}
+	lidJID, err := types.ParseJID(lid + "@" + string(types.HiddenUserServer))
+	if err != nil || lidJID.IsEmpty() {
+		return jid
+	}
+	return lidJID.ToNonAD()
+}
+
+func (p *DevicePool) startHistorySyncTimeout(target onDemandSyncTarget) {
+	key := historySyncTargetKey(target.DeviceID, target.ChatID)
+	go func() {
+		time.Sleep(historySyncTimeout)
+
+		p.mu.Lock()
+		current := p.onDemandSyncTargets[key]
+		if current == nil || !current.RequestedAt.Equal(target.RequestedAt) {
+			p.mu.Unlock()
+			return
+		}
+		delete(p.onDemandSyncTargets, key)
+		p.mu.Unlock()
+
+		log.Printf("[HistorySync] Timeout waiting for ON_DEMAND response for chat %s (device=%s)", target.ChatJID, target.DeviceID)
+		p.hub.BroadcastToAccount(target.AccountID, ws.EventHistorySyncTimeout, map[string]interface{}{
+			"chat_id":   target.ChatID.String(),
+			"device_id": target.DeviceID.String(),
+			"status":    "timeout",
+			"message":   "WhatsApp no devolvió historial para este chat",
+		})
+	}()
 }
 
 // RequestHistorySync sends an on-demand history sync request for a specific chat.
 // It finds the oldest message timestamp and requests messages before that point.
 // deviceID specifies which device to use (must be the device that owns the chat).
 func (p *DevicePool) RequestHistorySync(ctx context.Context, accountID uuid.UUID, deviceID uuid.UUID, chatID uuid.UUID, chatJID string) error {
+	return p.requestHistorySync(ctx, accountID, deviceID, chatID, chatJID, false)
+}
+
+func (p *DevicePool) requestHistorySync(ctx context.Context, accountID uuid.UUID, deviceID uuid.UUID, chatID uuid.UUID, chatJID string, replaceActive bool) error {
+	targetKey := historySyncTargetKey(deviceID, chatID)
+	p.mu.Lock()
+	if existing := p.onDemandSyncTargets[targetKey]; existing != nil && !replaceActive {
+		if time.Since(existing.RequestedAt) < historySyncTimeout {
+			p.mu.Unlock()
+			p.hub.BroadcastToAccount(accountID, ws.EventHistorySyncStarted, map[string]interface{}{
+				"chat_id":   chatID.String(),
+				"device_id": deviceID.String(),
+				"status":    "pending",
+				"message":   "La sincronización de historial ya está en curso",
+			})
+			return nil
+		}
+		delete(p.onDemandSyncTargets, targetKey)
+	}
+	p.mu.Unlock()
+
 	// Find the specific device for this chat
 	p.mu.RLock()
 	var instance *DeviceInstance
@@ -1858,6 +1974,7 @@ func (p *DevicePool) RequestHistorySync(ctx context.Context, accountID uuid.UUID
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
+	requestJID := p.resolveHistorySyncChatJID(ctx, targetJID)
 
 	// Find the oldest message in this chat to paginate before it
 	oldestMsg, err := p.repos.Message.GetOldestByChatID(ctx, chatID)
@@ -1867,7 +1984,7 @@ func (p *DevicePool) RequestHistorySync(ctx context.Context, accountID uuid.UUID
 		// Build message info from oldest known message
 		msgInfo = &types.MessageInfo{
 			MessageSource: types.MessageSource{
-				Chat:     targetJID,
+				Chat:     requestJID,
 				IsFromMe: oldestMsg.IsFromMe,
 			},
 			ID:        oldestMsg.MessageID,
@@ -1875,17 +1992,23 @@ func (p *DevicePool) RequestHistorySync(ctx context.Context, accountID uuid.UUID
 		}
 		if oldestMsg.IsFromMe {
 			msgInfo.Sender = instance.Client.Store.ID.ToNonAD()
+		} else if oldestMsg.FromJID != nil && strings.TrimSpace(*oldestMsg.FromJID) != "" {
+			if senderJID, err := types.ParseJID(strings.TrimSpace(*oldestMsg.FromJID)); err == nil && !senderJID.IsEmpty() {
+				msgInfo.Sender = senderJID.ToNonAD()
+			} else {
+				msgInfo.Sender = requestJID
+			}
 		} else {
-			msgInfo.Sender = targetJID
+			msgInfo.Sender = requestJID
 		}
 	}
 
 	// Log exact details being sent
 	if msgInfo != nil {
-		log.Printf("[HistorySync] Building request: chat=%s, msgID=%s, isFromMe=%v, timestamp=%s, sender=%s",
-			msgInfo.Chat.String(), msgInfo.ID, msgInfo.IsFromMe, msgInfo.Timestamp.Format(time.RFC3339), msgInfo.Sender.String())
+		log.Printf("[HistorySync] Building request: storedChat=%s requestChat=%s msgID=%s isFromMe=%v timestamp=%s sender=%s",
+			chatJID, msgInfo.Chat.String(), msgInfo.ID, msgInfo.IsFromMe, msgInfo.Timestamp.Format(time.RFC3339), msgInfo.Sender.String())
 	} else {
-		log.Printf("[HistorySync] Building request with nil msgInfo (fetch most recent)")
+		log.Printf("[HistorySync] Building request with nil msgInfo (fetch most recent) storedChat=%s requestChat=%s", chatJID, requestJID.String())
 	}
 
 	// Build and send the history sync request (50 messages)
@@ -1895,18 +2018,29 @@ func (p *DevicePool) RequestHistorySync(ctx context.Context, accountID uuid.UUID
 		return fmt.Errorf("failed to send history sync request: %w", err)
 	}
 
-	// Track this as the active on-demand sync target for auto-chaining
-	p.mu.Lock()
-	p.onDemandSyncTarget = &onDemandSyncTarget{
-		AccountID: accountID,
-		DeviceID:  deviceID,
-		ChatID:    chatID,
-		ChatJID:   chatJID,
+	target := onDemandSyncTarget{
+		AccountID:   accountID,
+		DeviceID:    deviceID,
+		ChatID:      chatID,
+		ChatJID:     chatJID,
+		RequestedAt: time.Now(),
 	}
-	p.mu.Unlock()
 
-	log.Printf("[HistorySync] Requested on-demand sync for chat %s (device=%s, before=%v, peerMsgID=%s, timestamp=%s)",
-		chatJID, instance.ID, msgInfo != nil, resp.ID, resp.Timestamp.Format(time.RFC3339))
+	p.mu.Lock()
+	p.onDemandSyncTargets[targetKey] = &target
+	p.mu.Unlock()
+	p.startHistorySyncTimeout(target)
+
+	p.hub.BroadcastToAccount(accountID, ws.EventHistorySyncStarted, map[string]interface{}{
+		"chat_id":      chatID.String(),
+		"device_id":    deviceID.String(),
+		"status":       "requested",
+		"message":      "WhatsApp está preparando el historial de este chat",
+		"request_chat": requestJID.String(),
+	})
+
+	log.Printf("[HistorySync] Requested on-demand sync for chat %s (requestChat=%s device=%s before=%v peerMsgID=%s timestamp=%s)",
+		chatJID, requestJID.String(), instance.ID, msgInfo != nil, resp.ID, resp.Timestamp.Format(time.RFC3339))
 	return nil
 }
 
