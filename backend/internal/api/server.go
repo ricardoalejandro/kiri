@@ -442,10 +442,10 @@ func (s *Server) setupRoutes() {
 	quickReplies.Delete("/:id", s.handleDeleteQuickReply)
 
 	// Google Contacts integration routes
+	protected.Get("/google/status", s.requireAnyPermission(domain.PermContacts, domain.PermSettings, domain.PermIntegrations), s.handleGoogleStatus)
 	googleGroup := protected.Group("/google", s.requirePermission(domain.PermIntegrations))
 	googleGroup.Get("/auth-url", s.handleGoogleAuthURL)
 	googleGroup.Delete("/disconnect", s.handleGoogleDisconnect)
-	googleGroup.Get("/status", s.handleGoogleStatus)
 	// Google Contacts sync routes (requires contacts permission)
 	googleContacts := protected.Group("/google/contacts", s.requirePermission(domain.PermContacts), s.requirePlanFeature("google_contacts"))
 	googleContacts.Post("/:id/sync", s.handleGoogleSyncContact)
@@ -638,6 +638,52 @@ func (s *Server) requirePermission(module string) fiber.Handler {
 		if err == nil {
 			for _, p := range dbPerms {
 				if p == domain.PermAll || p == module {
+					return c.Next()
+				}
+			}
+		}
+		var dbRole string
+		err = s.repos.DB().QueryRow(c.Context(),
+			`SELECT role FROM user_accounts WHERE user_id = $1 AND account_id = $2`,
+			claims.UserID, claims.AccountID).Scan(&dbRole)
+		if err == nil && dbRole == domain.RoleSuperAdmin {
+			return c.Next()
+		}
+
+		return c.Status(403).JSON(fiber.Map{
+			"success": false,
+			"error":   "No tienes permiso para acceder a este módulo",
+		})
+	}
+}
+
+// requireAnyPermission checks whether the caller can access at least one of the
+// requested modules. It is used by read-only endpoints shared across modules.
+func (s *Server) requireAnyPermission(modules ...string) fiber.Handler {
+	allowed := make(map[string]bool, len(modules))
+	for _, module := range modules {
+		allowed[module] = true
+	}
+
+	return func(c *fiber.Ctx) error {
+		claims, ok := c.Locals("claims").(*service.JWTClaims)
+		if !ok {
+			return c.Status(401).JSON(fiber.Map{"success": false, "error": "Unauthorized"})
+		}
+
+		if claims.IsSuperAdmin || claims.Role == domain.RoleSuperAdmin {
+			return c.Next()
+		}
+		for _, p := range claims.Permissions {
+			if p == domain.PermAll || allowed[p] {
+				return c.Next()
+			}
+		}
+
+		dbPerms, err := s.repos.UserAccount.GetUserPermissions(c.Context(), claims.UserID, claims.AccountID)
+		if err == nil {
+			for _, p := range dbPerms {
+				if p == domain.PermAll || allowed[p] {
 					return c.Next()
 				}
 			}
