@@ -700,20 +700,16 @@ func Migrate(db *pgxpool.Pool) error {
 
 		// Seed system roles (idempotent)
 		`INSERT INTO roles (name, description, is_system, permissions) VALUES
-			('Administrador', 'Acceso total a todos los módulos', TRUE, ARRAY['chats','contacts','devices','leads','broadcasts','tags','settings','integrations','whatsapp_api'])
+			('Administrador', 'Acceso a administración y configuración', TRUE, ARRAY['admin','settings'])
 		 ON CONFLICT (name) DO NOTHING`,
-		// Ensure existing 'Administrador' role gets the new 'integrations' permission
-		`UPDATE roles SET permissions = array_append(permissions, 'integrations') WHERE name = 'Administrador' AND NOT ('integrations' = ANY(permissions))`,
+		`UPDATE roles SET description = 'Acceso a administración y configuración', permissions = ARRAY['admin','settings'] WHERE name = 'Administrador'`,
 		`INSERT INTO roles (name, description, is_system, permissions) VALUES
 		('Supervisor', 'Acceso a chats, leads, contactos y etiquetas', TRUE, ARRAY['chats','contacts','leads','tags'])
 		 ON CONFLICT (name) DO NOTHING`,
 		`INSERT INTO roles (name, description, is_system, permissions) VALUES
 			('Agente Básico', 'Acceso solo a chats y contactos', TRUE, ARRAY['chats','contacts','tags'])
 		 ON CONFLICT (name) DO NOTHING`,
-		// Backfill newly split module permissions only for the platform admin.
 		// Custom roles must preserve the exact permissions saved by admins.
-		`UPDATE roles SET permissions = array_append(permissions, 'automations') WHERE name = 'Administrador' AND NOT ('automations' = ANY(permissions))`,
-		`UPDATE roles SET permissions = array_append(permissions, 'bots') WHERE name = 'Administrador' AND NOT ('bots' = ANY(permissions))`,
 		`CREATE TABLE IF NOT EXISTS migration_flags (
 			key TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ DEFAULT NOW()
@@ -951,7 +947,7 @@ func Migrate(db *pgxpool.Pool) error {
 		`CREATE INDEX IF NOT EXISTS idx_survey_answers_question ON survey_answers(question_id)`,
 
 		// Add surveys permission to Administrador role
-		`UPDATE roles SET permissions = array_append(permissions, 'surveys') WHERE name = 'Administrador' AND NOT ('surveys' = ANY(permissions))`,
+		`SELECT 1`,
 
 		// Add is_template column to surveys
 		`ALTER TABLE surveys ADD COLUMN IF NOT EXISTS is_template BOOLEAN NOT NULL DEFAULT FALSE`,
@@ -1188,7 +1184,7 @@ func Migrate(db *pgxpool.Pool) error {
 		`ALTER TABLE dynamic_items ADD COLUMN IF NOT EXISTS file_size BIGINT NOT NULL DEFAULT 0`,
 
 		// Add dynamics permission to Administrador role
-		`UPDATE roles SET permissions = array_append(permissions, 'dynamics') WHERE name = 'Administrador' AND NOT ('dynamics' = ANY(permissions))`,
+		`SELECT 1`,
 
 		// ─── Dynamic Options (categories for scratch card items) ──────────
 		`CREATE TABLE IF NOT EXISTS dynamic_options (
@@ -1801,7 +1797,7 @@ func removeRetiredKiriFeatures(ctx context.Context, db *pgxpool.Pool) error {
 		`ALTER TABLE sync_monitor_entries DROP COLUMN IF EXISTS kommo_entity_id`,
 		`DELETE FROM plan_entitlements WHERE key = 'kommo_sync'`,
 		`UPDATE roles SET permissions = array_remove(array_remove(array_remove(array_remove(permissions, 'programs'), 'events'), 'surveys'), 'dynamics')`,
-		`UPDATE roles SET permissions = array_append(permissions, 'whatsapp_api') WHERE name = 'Administrador' AND NOT ('whatsapp_api' = ANY(permissions))`,
+		`UPDATE roles SET permissions = ARRAY['admin','settings'] WHERE name = 'Administrador'`,
 	}
 
 	for _, stmt := range cleanup {

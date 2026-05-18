@@ -301,14 +301,15 @@ export default function DashboardLayout({
     '/dashboard/documents': 'documents',
     '/dashboard/tags': 'tags',
     '/dashboard/settings': 'settings',
+    '/dashboard/admin': 'admin',
   }
 
   function hasPermission(href: string): boolean {
     if (!user) return false
     if (href === '/dashboard/storage') return true
-    if (user.is_admin || user.is_super_admin) return true
+    if (user.is_super_admin) return true
     const module = MODULE_PERMS[href]
-    if (!module) return true // Dashboard and Admin (no module restriction)
+    if (!module) return true // Dashboard
     const perms = user.permissions || []
     return perms.includes('*') || perms.includes(module)
   }
@@ -327,7 +328,7 @@ export default function DashboardLayout({
     { href: '/dashboard/tags', icon: Tags, label: 'Etiquetas', desc: 'Organización por etiquetas' },
     { href: '/dashboard/storage', icon: HardDrive, label: 'Almacenamiento', desc: 'Archivos y espacio' },
     { href: '/dashboard/settings', icon: Settings, label: 'Configuración', desc: 'Ajustes del sistema' },
-    ...(user?.is_super_admin ? [{ href: '/dashboard/admin', icon: Shield, label: 'Admin', desc: 'Administración global' }] : []),
+    { href: '/dashboard/admin', icon: Shield, label: 'Admin', desc: 'Administración global' },
   ].filter(item => hasPermission(item.href))
 
   // When mobile overlay is open, always show expanded (not collapsed)

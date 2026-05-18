@@ -161,6 +161,7 @@ const (
 	PermBots         = "bots"
 	PermTasks        = "tasks"
 	PermDocuments    = "documents"
+	PermAdmin        = "admin"
 	PermAll          = "*"
 )
 
@@ -169,7 +170,7 @@ var AllPermissions = []string{
 	PermChats, PermContacts, PermLeads,
 	PermAutomations, PermBots, PermDevices,
 	PermBroadcasts, PermTasks, PermDocuments,
-	PermTags, PermSettings, PermIntegrations, PermWhatsAppAPI,
+	PermTags, PermSettings, PermIntegrations, PermWhatsAppAPI, PermAdmin,
 }
 
 // Role represents a named set of module permissions
@@ -194,10 +195,10 @@ type UserAccount struct {
 	CreatedAt time.Time  `json:"created_at"`
 
 	// Populated on demand
-	AccountName       string   `json:"account_name,omitempty"`
-	AccountSlug       string   `json:"account_slug,omitempty"`
-	RoleName          string   `json:"role_name,omitempty"`
-	Permissions       []string `json:"permissions,omitempty"`
+	AccountName string   `json:"account_name,omitempty"`
+	AccountSlug string   `json:"account_slug,omitempty"`
+	RoleName    string   `json:"role_name,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // Device represents a WhatsApp connection
@@ -659,38 +660,38 @@ const (
 
 // Lead represents a potential customer
 type Lead struct {
-	ID             uuid.UUID              `json:"id"`
-	AccountID      uuid.UUID              `json:"account_id"`
-	ContactID      *uuid.UUID             `json:"contact_id,omitempty"`
-	JID            string                 `json:"jid"`
-	Name           *string                `json:"name,omitempty"`
-	LastName       *string                `json:"last_name,omitempty"`
-	ShortName      *string                `json:"short_name,omitempty"`
-	Phone          *string                `json:"phone,omitempty"`
-	Email          *string                `json:"email,omitempty"`
-	Company        *string                `json:"company,omitempty"`
-	Age            *int                   `json:"age,omitempty"`
-	DNI            *string                `json:"dni,omitempty"`
-	BirthDate      *time.Time             `json:"birth_date,omitempty"`
-	Address        *string                `json:"address,omitempty"`
-	Distrito       *string                `json:"distrito,omitempty"`
-	Ocupacion      *string                `json:"ocupacion,omitempty"`
-	Status         *string                `json:"status,omitempty"` // legacy, kept for backward compat
-	PipelineID     *uuid.UUID             `json:"pipeline_id,omitempty"`
-	StageID        *uuid.UUID             `json:"stage_id,omitempty"`
-	Source         *string                `json:"source,omitempty"`
-	Notes          *string                `json:"notes,omitempty"`
-	Tags           []string               `json:"tags,omitempty"`
-	CustomFields   map[string]interface{} `json:"custom_fields,omitempty"`
-	AssignedTo     *uuid.UUID             `json:"assigned_to,omitempty"`
-	IsArchived     bool                   `json:"is_archived"`
-	ArchivedAt     *time.Time             `json:"archived_at,omitempty"`
-	ArchiveReason  string                 `json:"archive_reason,omitempty"`
-	IsBlocked      bool                   `json:"is_blocked"`
-	BlockedAt      *time.Time             `json:"blocked_at,omitempty"`
-	BlockReason    string                 `json:"block_reason,omitempty"`
-	CreatedAt      time.Time              `json:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
+	ID            uuid.UUID              `json:"id"`
+	AccountID     uuid.UUID              `json:"account_id"`
+	ContactID     *uuid.UUID             `json:"contact_id,omitempty"`
+	JID           string                 `json:"jid"`
+	Name          *string                `json:"name,omitempty"`
+	LastName      *string                `json:"last_name,omitempty"`
+	ShortName     *string                `json:"short_name,omitempty"`
+	Phone         *string                `json:"phone,omitempty"`
+	Email         *string                `json:"email,omitempty"`
+	Company       *string                `json:"company,omitempty"`
+	Age           *int                   `json:"age,omitempty"`
+	DNI           *string                `json:"dni,omitempty"`
+	BirthDate     *time.Time             `json:"birth_date,omitempty"`
+	Address       *string                `json:"address,omitempty"`
+	Distrito      *string                `json:"distrito,omitempty"`
+	Ocupacion     *string                `json:"ocupacion,omitempty"`
+	Status        *string                `json:"status,omitempty"` // legacy, kept for backward compat
+	PipelineID    *uuid.UUID             `json:"pipeline_id,omitempty"`
+	StageID       *uuid.UUID             `json:"stage_id,omitempty"`
+	Source        *string                `json:"source,omitempty"`
+	Notes         *string                `json:"notes,omitempty"`
+	Tags          []string               `json:"tags,omitempty"`
+	CustomFields  map[string]interface{} `json:"custom_fields,omitempty"`
+	AssignedTo    *uuid.UUID             `json:"assigned_to,omitempty"`
+	IsArchived    bool                   `json:"is_archived"`
+	ArchivedAt    *time.Time             `json:"archived_at,omitempty"`
+	ArchiveReason string                 `json:"archive_reason,omitempty"`
+	IsBlocked     bool                   `json:"is_blocked"`
+	BlockedAt     *time.Time             `json:"blocked_at,omitempty"`
+	BlockReason   string                 `json:"block_reason,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
 
 	// Relations (populated on demand)
 	Contact           *Contact            `json:"contact,omitempty"`

@@ -1716,11 +1716,11 @@ export default function SettingsPage() {
   const tabs = [
     { id: 'profile', label: 'Perfil', icon: User },
     { id: 'account', label: 'Cuenta', icon: Building },
-    ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('integrations') || user?.permissions?.includes('*')) ? [{ id: 'integrations', label: 'Integraciones', icon: Link2 }] : []),
-    ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('devices') || user?.permissions?.includes('*')) ? [{ id: 'devices', label: 'Dispositivos', icon: Smartphone }] : []),
-    ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('whatsapp_api') || user?.permissions?.includes('*')) ? [{ id: 'whatsapp-api', label: 'WhatsApp API', icon: Globe }] : []),
+    ...((user?.is_super_admin || user?.permissions?.includes('integrations') || user?.permissions?.includes('*')) ? [{ id: 'integrations', label: 'Integraciones', icon: Link2 }] : []),
+    ...((user?.is_super_admin || user?.permissions?.includes('devices') || user?.permissions?.includes('*')) ? [{ id: 'devices', label: 'Dispositivos', icon: Smartphone }] : []),
+    ...((user?.is_super_admin || user?.permissions?.includes('whatsapp_api') || user?.permissions?.includes('*')) ? [{ id: 'whatsapp-api', label: 'WhatsApp API', icon: Globe }] : []),
     { id: 'quick-replies', label: 'Resp. Rápidas', icon: Zap },
-    ...((user?.is_super_admin || user?.is_admin || user?.permissions?.includes('settings') || user?.permissions?.includes('*')) ? [{ id: 'custom-fields', label: 'Campos', icon: Tag }] : []),
+    ...((user?.is_super_admin || user?.permissions?.includes('settings') || user?.permissions?.includes('*')) ? [{ id: 'custom-fields', label: 'Campos', icon: Tag }] : []),
     { id: 'notifications', label: 'Notificaciones', icon: Bell },
     { id: 'security', label: 'Seguridad', icon: Shield },
   ]

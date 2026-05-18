@@ -151,11 +151,11 @@ func (s *AuthService) Login(ctx context.Context, username, password, jwtSecret s
 		}
 	}
 
-	// Generate JWT with default account
-	// Admins/super_admins get wildcard; agents get their role's permissions
+	// Generate JWT with default account. Only super admins get wildcard;
+	// account admins use the permissions stored in their assigned role.
 	isAdmin := user.IsAdmin || user.IsSuperAdmin || activeRole == domain.RoleAdmin || activeRole == domain.RoleSuperAdmin
 	var permissions []string
-	if isAdmin {
+	if user.IsSuperAdmin || activeRole == domain.RoleSuperAdmin {
 		permissions = []string{domain.PermAll}
 	} else {
 		permissions, _ = s.repos.UserAccount.GetUserPermissions(ctx, user.ID, activeAccountID)
@@ -240,7 +240,7 @@ func (s *AuthService) SwitchAccount(ctx context.Context, userID, targetAccountID
 	// Generate new JWT for the target account
 	isAdmin := user.IsAdmin || user.IsSuperAdmin || accountRole == domain.RoleAdmin || accountRole == domain.RoleSuperAdmin
 	var permissions []string
-	if isAdmin {
+	if user.IsSuperAdmin || accountRole == domain.RoleSuperAdmin {
 		permissions = []string{domain.PermAll}
 	} else {
 		permissions, _ = s.repos.UserAccount.GetUserPermissions(ctx, userID, targetAccountID)
@@ -436,10 +436,10 @@ func (s *AuthService) RefreshToken(ctx context.Context, oldRefreshToken, jwtSecr
 		}
 	}
 
-	// Get current permissions — per-account admin gets full access
+	// Get current permissions — only super admins get wildcard access.
 	isAdmin := user.IsAdmin || user.IsSuperAdmin || accountRole == domain.RoleAdmin || accountRole == domain.RoleSuperAdmin
 	var permissions []string
-	if isAdmin {
+	if user.IsSuperAdmin || accountRole == domain.RoleSuperAdmin {
 		permissions = []string{domain.PermAll}
 	} else {
 		permissions, _ = s.repos.UserAccount.GetUserPermissions(ctx, userID, accountID)

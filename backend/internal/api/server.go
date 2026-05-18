@@ -505,8 +505,9 @@ func (s *Server) setupRoutes() {
 	protected.Get("/ai/conversations/:id", s.handleGetErosConversation)
 	protected.Delete("/ai/conversations/:id", s.handleDeleteErosConversation)
 
-	// Super Admin routes
-	admin := protected.Group("/admin", s.superAdminMiddleware)
+	// Admin routes. Access is controlled by the explicit admin permission;
+	// super admins still pass through the wildcard permission.
+	admin := protected.Group("/admin", s.requirePermission(domain.PermAdmin))
 
 	// Account management
 	admin.Get("/plans", s.handleListPlans)
@@ -614,7 +615,7 @@ func (s *Server) superAdminMiddleware(c *fiber.Ctx) error {
 }
 
 // requirePermission returns a middleware that checks if the caller has the given module permission.
-// Admins and super_admins bypass this check entirely.
+// Only super admins bypass this check entirely; account admins must carry explicit permissions.
 func (s *Server) requirePermission(module string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		claims, ok := c.Locals("claims").(*service.JWTClaims)
@@ -622,11 +623,7 @@ func (s *Server) requirePermission(module string) fiber.Handler {
 			return c.Status(401).JSON(fiber.Map{"success": false, "error": "Unauthorized"})
 		}
 
-		// Derive admin status from JWT role (covers old tokens with stale IsAdmin flag)
-		isAdmin := claims.IsAdmin || claims.IsSuperAdmin || claims.Role == domain.RoleAdmin || claims.Role == domain.RoleSuperAdmin
-
-		// Admins always have full access
-		if isAdmin {
+		if claims.IsSuperAdmin || claims.Role == domain.RoleSuperAdmin {
 			return c.Next()
 		}
 		// Check permissions slice
@@ -636,12 +633,20 @@ func (s *Server) requirePermission(module string) fiber.Handler {
 			}
 		}
 
-		// Fallback: check actual per-account role from DB (handles stale JWTs)
+		// Fallback: check actual per-account permissions from DB (handles stale JWTs)
+		dbPerms, err := s.repos.UserAccount.GetUserPermissions(c.Context(), claims.UserID, claims.AccountID)
+		if err == nil {
+			for _, p := range dbPerms {
+				if p == domain.PermAll || p == module {
+					return c.Next()
+				}
+			}
+		}
 		var dbRole string
-		err := s.repos.DB().QueryRow(c.Context(),
+		err = s.repos.DB().QueryRow(c.Context(),
 			`SELECT role FROM user_accounts WHERE user_id = $1 AND account_id = $2`,
 			claims.UserID, claims.AccountID).Scan(&dbRole)
-		if err == nil && (dbRole == domain.RoleAdmin || dbRole == domain.RoleSuperAdmin) {
+		if err == nil && dbRole == domain.RoleSuperAdmin {
 			return c.Next()
 		}
 
@@ -776,8 +781,8 @@ func (s *Server) handleLogin(c *fiber.Ctx) error {
 		})
 	}
 
-	// Build permissions for response (mirrors JWT logic)
-	// Per-account admin/super_admin gets full access
+	// Build permissions for response (mirrors JWT logic).
+	// Only super admins get wildcard access; account admins use role permissions.
 	activeRole := user.Role
 	for _, ua := range userAccounts {
 		if ua.AccountID == user.AccountID {
@@ -786,14 +791,16 @@ func (s *Server) handleLogin(c *fiber.Ctx) error {
 		}
 	}
 	isAdmin := user.IsAdmin || user.IsSuperAdmin || activeRole == domain.RoleAdmin || activeRole == domain.RoleSuperAdmin
-	permissions := []string{domain.PermAll}
-	if !isAdmin {
+	var permissions []string
+	if user.IsSuperAdmin || activeRole == domain.RoleSuperAdmin {
+		permissions = []string{domain.PermAll}
+	} else {
 		for _, ua := range userAccounts {
 			if ua.AccountID == user.AccountID {
 				if ua.Permissions != nil {
 					permissions = ua.Permissions
 				} else {
-					permissions = []string{}
+					permissions, _ = s.repos.UserAccount.GetUserPermissions(c.Context(), user.ID, user.AccountID)
 				}
 				break
 			}
@@ -938,9 +945,9 @@ func (s *Server) handleGetMe(c *fiber.Ctx) error {
 	}
 	isAdmin := user.IsAdmin || user.IsSuperAdmin || activeRole == domain.RoleAdmin || activeRole == domain.RoleSuperAdmin
 
-	// Compute permissions: admins get wildcard, agents get role-based permissions
+	// Compute permissions: only super admins get wildcard.
 	var permissions []string
-	if isAdmin {
+	if user.IsSuperAdmin || activeRole == domain.RoleSuperAdmin {
 		permissions = []string{domain.PermAll}
 	} else {
 		permissions = claims.Permissions
@@ -11837,9 +11844,6 @@ func (s *Server) handleAdminUpdateRole(c *fiber.Ctx) error {
 	if existing == nil {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Role not found"})
 	}
-	if existing.IsSystem {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "System roles cannot be edited"})
-	}
 	var req struct {
 		Name        string   `json:"name"`
 		Description string   `json:"description"`
@@ -11848,7 +11852,9 @@ func (s *Server) handleAdminUpdateRole(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
 	}
-	existing.Name = strings.TrimSpace(req.Name)
+	if !existing.IsSystem {
+		existing.Name = strings.TrimSpace(req.Name)
+	}
 	existing.Description = strings.TrimSpace(req.Description)
 	existing.Permissions = sanitizeRolePermissions(req.Permissions)
 	if existing.Name == "" {
@@ -11933,10 +11939,12 @@ func (s *Server) handleSwitchAccount(c *fiber.Ctx) error {
 		Path:     "/api/auth",
 	})
 
-	// Compute permissions for response — per-account admin gets full access
+	// Compute permissions for response — only super admins get wildcard.
 	isAdmin := user.IsAdmin || user.IsSuperAdmin || user.Role == domain.RoleAdmin || user.Role == domain.RoleSuperAdmin
-	perms := []string{domain.PermAll}
-	if !isAdmin {
+	var perms []string
+	if user.IsSuperAdmin || user.Role == domain.RoleSuperAdmin {
+		perms = []string{domain.PermAll}
+	} else {
 		perms, _ = s.repos.UserAccount.GetUserPermissions(c.Context(), userID, targetAccountID)
 	}
 

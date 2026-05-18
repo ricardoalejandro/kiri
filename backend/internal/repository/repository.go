@@ -421,7 +421,11 @@ func (r *UserAccountRepository) GetUserPermissions(ctx context.Context, userID, 
 		SELECT COALESCE(ro.permissions, '{}')
 		FROM user_accounts ua
 		LEFT JOIN roles ro ON ro.id = ua.role_id
+			OR (ua.role_id IS NULL AND ua.role = 'admin' AND ro.name = 'Administrador')
+			OR (ua.role_id IS NULL AND ua.role = 'agent' AND ro.name = 'Agente Básico')
 		WHERE ua.user_id = $1 AND ua.account_id = $2
+		ORDER BY ro.is_system DESC
+		LIMIT 1
 	`, userID, accountID).Scan(&permissions)
 	if err != nil {
 		return []string{}, nil

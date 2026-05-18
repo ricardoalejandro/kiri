@@ -86,9 +86,12 @@ const ALL_MODULES = [
   { key: 'devices', label: 'Dispositivos', color: 'cyan' },
   { key: 'broadcasts', label: 'Difusión', color: 'yellow' },
   { key: 'tags', label: 'Etiquetas', color: 'teal' },
+  { key: 'integrations', label: 'Integraciones', color: 'cyan' },
+  { key: 'whatsapp_api', label: 'WhatsApp API', color: 'emerald' },
   { key: 'settings', label: 'Configuración', color: 'slate' },
   { key: 'tasks', label: 'Tareas', color: 'lime' },
   { key: 'documents', label: 'Plantillas', color: 'purple' },
+  { key: 'admin', label: 'Admin', color: 'red' },
 ]
 
 function formatBytes(bytes?: number) {
@@ -954,6 +957,11 @@ export default function AdminPage() {
                 {editingRole ? 'Editar Rol' : 'Nuevo Rol'}
               </h2>
               <p className="text-sm text-gray-500 mt-1">Define qué módulos pueden acceder los usuarios con este rol</p>
+              {editingRole?.is_system && (
+                <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Rol base del sistema: puedes ajustar descripción y permisos, pero no renombrarlo ni eliminarlo.
+                </p>
+              )}
             </div>
             <div className="p-6 space-y-5">
               <div>
