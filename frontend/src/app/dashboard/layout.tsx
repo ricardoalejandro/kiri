@@ -74,6 +74,19 @@ interface Announcement {
   cta_url: string
 }
 
+type FeedbackCategory = 'idea' | 'problem' | 'improvement' | 'question'
+
+interface FeedbackForm {
+  category: FeedbackCategory
+  subject: string
+  detail: string
+  image_url: string
+}
+
+function createEmptyFeedbackForm(): FeedbackForm {
+  return { category: 'idea', subject: '', detail: '', image_url: '' }
+}
+
 function subscriptionLabel(status?: string) {
   const labels: Record<string, string> = {
     trialing: 'Prueba',
@@ -109,8 +122,9 @@ export default function DashboardLayout({
   const [announcements, setAnnouncements] = useState<Announcement[]>([])
   const [activeAnnouncement, setActiveAnnouncement] = useState<Announcement | null>(null)
   const [showFeedbackModal, setShowFeedbackModal] = useState(false)
-  const [feedbackForm, setFeedbackForm] = useState({ category: 'idea', subject: '', detail: '', image_url: '' })
+  const [feedbackForm, setFeedbackForm] = useState<FeedbackForm>(createEmptyFeedbackForm)
   const [feedbackSending, setFeedbackSending] = useState(false)
+  const feedbackUploadSessionRef = useRef(0)
   const clientVersion = process.env.NEXT_PUBLIC_BUILD_VERSION || 'dev'
 
   // Ctrl+I to toggle Eros
@@ -337,13 +351,31 @@ export default function DashboardLayout({
     })
   }
 
+  const openFeedbackModal = () => {
+    feedbackUploadSessionRef.current += 1
+    setFeedbackForm(createEmptyFeedbackForm())
+    setShowFeedbackModal(true)
+  }
+
+  const closeFeedbackModal = () => {
+    feedbackUploadSessionRef.current += 1
+    setShowFeedbackModal(false)
+    setFeedbackForm(createEmptyFeedbackForm())
+  }
+
+  const clearFeedbackImage = () => {
+    feedbackUploadSessionRef.current += 1
+    setFeedbackForm(f => ({ ...f, image_url: '' }))
+  }
+
   const uploadFeedbackImage = async (file?: File | null) => {
     if (!file) return
+    const uploadSession = feedbackUploadSessionRef.current
     const formData = new FormData()
     formData.append('file', file)
     const res = await fetch('/api/feedback/upload', { method: 'POST', body: formData, credentials: 'include' })
     const data = await res.json()
-    if (data.success) {
+    if (data.success && uploadSession === feedbackUploadSessionRef.current) {
       setFeedbackForm(f => ({ ...f, image_url: data.media_url || '' }))
     }
   }
@@ -363,8 +395,7 @@ export default function DashboardLayout({
       })
       const data = await res.json()
       if (data.success) {
-        setShowFeedbackModal(false)
-        setFeedbackForm({ category: 'idea', subject: '', detail: '', image_url: '' })
+        closeFeedbackModal()
       }
     } finally {
       setFeedbackSending(false)
@@ -845,7 +876,7 @@ export default function DashboardLayout({
     )}
 
     <button
-      onClick={() => setShowFeedbackModal(true)}
+      onClick={openFeedbackModal}
       className="fixed bottom-20 right-4 z-40 inline-flex items-center gap-2 px-3 py-2 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-semibold shadow-lg shadow-slate-200/70 hover:border-emerald-200 hover:text-emerald-700 hover:bg-emerald-50"
     >
       <Lightbulb className="w-4 h-4" />
@@ -860,14 +891,14 @@ export default function DashboardLayout({
               <h2 className="text-lg font-bold text-slate-900">Enviar sugerencia</h2>
               <p className="text-sm text-slate-500 mt-0.5">Cuéntanos qué mejorar en Kiri.</p>
             </div>
-            <button onClick={() => setShowFeedbackModal(false)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+            <button onClick={closeFeedbackModal} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
               <X className="w-5 h-5" />
             </button>
           </div>
           <div className="p-6 space-y-4">
             <select
               value={feedbackForm.category}
-              onChange={e => setFeedbackForm(f => ({ ...f, category: e.target.value }))}
+              onChange={e => setFeedbackForm(f => ({ ...f, category: e.target.value as FeedbackCategory }))}
               className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
             >
               <option value="idea">Idea</option>
@@ -891,13 +922,33 @@ export default function DashboardLayout({
               <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">
                 <Upload className="w-4 h-4" />
                 Adjuntar imagen
-                <input type="file" accept="image/*" className="hidden" onChange={e => uploadFeedbackImage(e.target.files?.[0])} />
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={e => {
+                    const file = e.currentTarget.files?.[0]
+                    e.currentTarget.value = ''
+                    void uploadFeedbackImage(file)
+                  }}
+                />
               </label>
-              {feedbackForm.image_url && <span className="text-xs text-emerald-700">Imagen adjunta lista.</span>}
+              {feedbackForm.image_url && (
+                <div className="inline-flex items-center gap-2">
+                  <span className="text-xs text-emerald-700">Imagen adjunta lista.</span>
+                  <button
+                    type="button"
+                    onClick={clearFeedbackImage}
+                    className="text-xs font-semibold text-slate-500 hover:text-red-600"
+                  >
+                    Quitar
+                  </button>
+                </div>
+              )}
             </div>
           </div>
           <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-3">
-            <button onClick={() => setShowFeedbackModal(false)} className="px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100">
+            <button onClick={closeFeedbackModal} className="px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100">
               Cancelar
             </button>
             <button
