@@ -12104,10 +12104,10 @@ func (s *Server) handleAdminReviewAccount(c *fiber.Ctx) error {
 
 	if _, err := tx.Exec(c.Context(), `
 		UPDATE accounts
-		SET review_status = $2,
+		SET review_status = $2::text,
 		    is_active = CASE
-		        WHEN $2 IN ('rejected', 'suspended') THEN FALSE
-		        WHEN $2 = 'approved' THEN TRUE
+		        WHEN $2::text IN ('rejected', 'suspended') THEN FALSE
+		        WHEN $2::text = 'approved' THEN TRUE
 		        ELSE is_active
 		    END,
 		    updated_at = NOW()
@@ -12117,7 +12117,7 @@ func (s *Server) handleAdminReviewAccount(c *fiber.Ctx) error {
 	}
 	if _, err := tx.Exec(c.Context(), `
 		UPDATE account_signup_requests
-		SET status = $2, reviewed_by = $3, reviewed_at = NOW(), updated_at = NOW(),
+		SET status = $2::text, reviewed_by = $3, reviewed_at = NOW(), updated_at = NOW(),
 		    metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('review_reason', $4::text)
 		WHERE account_id = $1
 	`, id, status, reviewerID, strings.TrimSpace(req.Reason)); err != nil {
