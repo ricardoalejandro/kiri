@@ -162,7 +162,7 @@ export default function LoginPage() {
               <form onSubmit={handleLogin} className="space-y-5">
                 <div>
                   <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
-                    Usuario
+                    Correo o usuario de acceso
                   </label>
                   <div className="relative">
                     <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-slate-400" />
@@ -170,7 +170,7 @@ export default function LoginPage() {
                       type="text"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      placeholder="usuario o correo"
+                      placeholder="correo@empresa.com o usuario"
                       className="w-full pl-11 pr-4 py-3 bg-white border border-slate-300 text-slate-900 placeholder:text-slate-400 rounded-xl focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 outline-none transition-all text-sm"
                       required
                       disabled={loading}

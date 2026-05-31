@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react'
 import {
   Building2, Users, Plus, Pencil, Trash2, Power, KeyRound,
   Search, X, Shield, ChevronDown, Link2, Lock, CheckSquare, Square,
-  HardDrive, Database, AlertTriangle, Eye, CheckCircle2, XCircle, Ban, Clock
+  HardDrive, Database, AlertTriangle, Eye, CheckCircle2, XCircle, Ban, Clock,
+  Bell, MessageSquareText, Inbox, Upload, ExternalLink
 } from 'lucide-react'
 
 interface Account {
@@ -113,6 +114,48 @@ interface Role {
   created_at: string
 }
 
+interface AnnouncementTarget {
+  account_id: string
+  account_code: string
+  company_name: string
+}
+
+interface Announcement {
+  id: string
+  title: string
+  body: string
+  type: 'info' | 'warning' | 'update'
+  status: 'draft' | 'published' | 'archived'
+  image_url: string
+  cta_label: string
+  cta_url: string
+  starts_at?: string | null
+  ends_at?: string | null
+  target_accounts?: AnnouncementTarget[]
+  read_count: number
+  created_at: string
+  updated_at: string
+}
+
+interface FeedbackSuggestion {
+  id: string
+  account_id: string
+  user_id?: string | null
+  category: 'idea' | 'problem' | 'improvement' | 'question'
+  subject: string
+  detail: string
+  page_url: string
+  image_url: string
+  status: 'new' | 'reviewing' | 'planned' | 'resolved' | 'closed'
+  admin_note: string
+  account_code: string
+  company_name: string
+  user_email: string
+  user_name: string
+  created_at: string
+  updated_at: string
+}
+
 interface NewUserAssignment {
   account_id: string
   role: string
@@ -158,7 +201,7 @@ function bytesToGb(value?: number) {
   return value && value > 0 ? Math.round((value / 1024 / 1024 / 1024) * 10) / 10 : 0
 }
 
-type Tab = 'accounts' | 'users' | 'roles'
+type Tab = 'requests' | 'accounts' | 'users' | 'roles' | 'announcements' | 'feedback'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('accounts')
@@ -166,12 +209,15 @@ export default function AdminPage() {
   const [users, setUsers] = useState<User[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [roles, setRoles] = useState<Role[]>([])
+  const [announcements, setAnnouncements] = useState<Announcement[]>([])
+  const [feedback, setFeedback] = useState<FeedbackSuggestion[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterAccountId, setFilterAccountId] = useState('')
   const [showAccountModal, setShowAccountModal] = useState(false)
   const [showUserModal, setShowUserModal] = useState(false)
   const [showRoleModal, setShowRoleModal] = useState(false)
+  const [showAnnouncementModal, setShowAnnouncementModal] = useState(false)
   const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [showAssignModal, setShowAssignModal] = useState(false)
   const [showPurgeModal, setShowPurgeModal] = useState(false)
@@ -181,9 +227,11 @@ export default function AdminPage() {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [editingRole, setEditingRole] = useState<Role | null>(null)
+  const [editingAnnouncement, setEditingAnnouncement] = useState<Announcement | null>(null)
   const [roleForm, setRoleForm] = useState<{ name: string; description: string; is_public_signup_default: boolean; permissions: string[] }>({ name: '', description: '', is_public_signup_default: false, permissions: [] })
   const [passwordUserId, setPasswordUserId] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('')
   const [assignUserId, setAssignUserId] = useState('')
   const [assignUserName, setAssignUserName] = useState('')
   const [assignAccountId, setAssignAccountId] = useState('')
@@ -208,7 +256,14 @@ export default function AdminPage() {
   const [userForm, setUserForm] = useState({
     account_id: '', username: '', email: '', password: '', display_name: '', role: 'agent'
   })
+  const [userPasswordConfirm, setUserPasswordConfirm] = useState('')
   const [userFormAssignments, setUserFormAssignments] = useState<NewUserAssignment[]>([])
+  const [announcementForm, setAnnouncementForm] = useState({
+    title: '', body: '', type: 'info', status: 'draft', image_url: '', cta_label: '', cta_url: '',
+    starts_at: '', ends_at: '', target_account_ids: [] as string[],
+  })
+  const [feedbackStatusFilter, setFeedbackStatusFilter] = useState('')
+  const [feedbackAccountFilter, setFeedbackAccountFilter] = useState('')
 
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
 
@@ -216,6 +271,7 @@ export default function AdminPage() {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${token}`,
   }
+  const authHeaders = { 'Authorization': `Bearer ${token}` }
 
   async function fetchAccounts() {
     try {
@@ -260,14 +316,68 @@ export default function AdminPage() {
     }
   }
 
+  async function fetchAnnouncements() {
+    try {
+      const res = await fetch('/api/admin/announcements', { headers })
+      const data = await res.json()
+      if (data.success) setAnnouncements(data.announcements || [])
+    } catch (e) {
+      console.error('Failed to fetch announcements:', e)
+    }
+  }
+
+  async function fetchFeedback() {
+    try {
+      const params = new URLSearchParams()
+      if (feedbackStatusFilter) params.set('status', feedbackStatusFilter)
+      if (feedbackAccountFilter) params.set('account_id', feedbackAccountFilter)
+      const url = `/api/admin/feedback${params.toString() ? `?${params.toString()}` : ''}`
+      const res = await fetch(url, { headers })
+      const data = await res.json()
+      if (data.success) setFeedback(data.feedback || [])
+    } catch (e) {
+      console.error('Failed to fetch feedback:', e)
+    }
+  }
+
   useEffect(() => {
     setLoading(true)
-    Promise.all([fetchAccounts(), fetchUsers(), fetchPlans(), fetchRoles()]).finally(() => setLoading(false))
+    Promise.all([fetchAccounts(), fetchUsers(), fetchPlans(), fetchRoles(), fetchAnnouncements(), fetchFeedback()]).finally(() => setLoading(false))
   }, [])
 
   useEffect(() => {
     fetchUsers()
   }, [filterAccountId])
+
+  useEffect(() => {
+    fetchFeedback()
+  }, [feedbackStatusFilter, feedbackAccountFilter])
+
+  function passwordIssues(password: string) {
+    const issues: string[] = []
+    if (password.length < 10) issues.push('10 caracteres')
+    if (!/[A-Z]/.test(password)) issues.push('mayúscula')
+    if (!/[a-z]/.test(password)) issues.push('minúscula')
+    if (!/\d/.test(password)) issues.push('número')
+    if (!/[^A-Za-z0-9]/.test(password)) issues.push('símbolo')
+    return issues
+  }
+
+  function generatedPassword() {
+    const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+    const lower = 'abcdefghijkmnopqrstuvwxyz'
+    const digits = '23456789'
+    const symbols = '!@#$%*?'
+    const all = upper + lower + digits + symbols
+    const pick = (chars: string) => chars[Math.floor(Math.random() * chars.length)]
+    const chars = [pick(upper), pick(lower), pick(digits), pick(symbols)]
+    for (let i = chars.length; i < 16; i++) chars.push(pick(all))
+    return chars.sort(() => Math.random() - 0.5).join('')
+  }
+
+  function isStrongPassword(password: string) {
+    return passwordIssues(password).length === 0
+  }
 
   // Close modals on Escape (topmost first)
   useEffect(() => {
@@ -276,6 +386,7 @@ export default function AdminPage() {
       if (detailAccount) { setDetailAccount(null); return }
       if (showPasswordModal) { setShowPasswordModal(false); return }
       if (showPurgeModal) { setShowPurgeModal(false); return }
+      if (showAnnouncementModal) { setShowAnnouncementModal(false); return }
       if (showRoleModal) { setShowRoleModal(false); return }
       if (showAssignModal) { setShowAssignModal(false); return }
       if (showUserModal) { setShowUserModal(false); return }
@@ -283,7 +394,7 @@ export default function AdminPage() {
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [detailAccount, showPasswordModal, showPurgeModal, showRoleModal, showAssignModal, showUserModal, showAccountModal])
+  }, [detailAccount, showPasswordModal, showPurgeModal, showAnnouncementModal, showRoleModal, showAssignModal, showUserModal, showAccountModal])
 
   // Account CRUD
   function openCreateAccount() {
@@ -443,6 +554,7 @@ export default function AdminPage() {
     setEditingUser(null)
     const initialAccount = filterAccountId || accounts.find(a => a.is_active)?.id || ''
     setUserForm({ account_id: initialAccount, username: '', email: '', password: '', display_name: '', role: 'agent' })
+    setUserPasswordConfirm('')
     setUserFormAssignments(initialAccount ? [{ account_id: initialAccount, role: 'agent', role_id: '', is_default: true }] : [])
     setShowUserModal(true)
   }
@@ -491,9 +603,18 @@ export default function AdminPage() {
         alert(data.error || 'Error al guardar')
       }
     } else {
+      if (userForm.password !== userPasswordConfirm) {
+        alert('Las contraseñas no coinciden')
+        return
+      }
+      const issues = passwordIssues(userForm.password)
+      if (issues.length > 0) {
+        alert(`La contraseña debe incluir: ${issues.join(', ')}`)
+        return
+      }
       const validAssignments = userFormAssignments.filter(item => item.account_id)
       const res = await fetch('/api/admin/users', {
-        method: 'POST', headers, body: JSON.stringify({ ...userForm, accounts: validAssignments })
+        method: 'POST', headers, body: JSON.stringify({ ...userForm, password_confirm: userPasswordConfirm, accounts: validAssignments })
       })
       const data = await res.json()
       if (data.success) {
@@ -526,17 +647,23 @@ export default function AdminPage() {
 
   async function resetPassword() {
     if (!newPassword) return
-    if (newPassword.length < 8) {
-      alert('La contraseña debe tener al menos 8 caracteres')
+    if (newPassword !== newPasswordConfirm) {
+      alert('Las contraseñas no coinciden')
+      return
+    }
+    const issues = passwordIssues(newPassword)
+    if (issues.length > 0) {
+      alert(`La contraseña debe incluir: ${issues.join(', ')}`)
       return
     }
     const res = await fetch(`/api/admin/users/${passwordUserId}/password`, {
-      method: 'PATCH', headers, body: JSON.stringify({ password: newPassword })
+      method: 'PATCH', headers, body: JSON.stringify({ password: newPassword, password_confirm: newPasswordConfirm })
     })
     const data = await res.json()
     if (data.success) {
       setShowPasswordModal(false)
       setNewPassword('')
+      setNewPasswordConfirm('')
       alert('Contraseña actualizada')
     } else {
       alert(data.error || 'Error')
@@ -616,6 +743,110 @@ export default function AdminPage() {
     r.name.toLowerCase().includes(search.toLowerCase()) ||
     r.description.toLowerCase().includes(search.toLowerCase())
   )
+
+  const pendingRequests = accounts.filter(a => a.creation_source === 'public_web' && a.review_status !== 'approved')
+  const filteredRequests = pendingRequests.filter(a =>
+    (a.account_code || '').toLowerCase().includes(search.toLowerCase()) ||
+    (a.company_name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (a.signup_email || '').toLowerCase().includes(search.toLowerCase()) ||
+    (a.signup_contact_name || '').toLowerCase().includes(search.toLowerCase())
+  )
+
+  const filteredAnnouncements = announcements.filter(a =>
+    a.title.toLowerCase().includes(search.toLowerCase()) ||
+    a.body.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const filteredFeedback = feedback.filter(item =>
+    item.subject.toLowerCase().includes(search.toLowerCase()) ||
+    item.detail.toLowerCase().includes(search.toLowerCase()) ||
+    (item.account_code || '').toLowerCase().includes(search.toLowerCase()) ||
+    (item.company_name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (item.user_email || '').toLowerCase().includes(search.toLowerCase())
+  )
+
+  function openCreateAnnouncement() {
+    setEditingAnnouncement(null)
+    setAnnouncementForm({
+      title: '', body: '', type: 'info', status: 'draft', image_url: '', cta_label: '', cta_url: '',
+      starts_at: '', ends_at: '', target_account_ids: [],
+    })
+    setShowAnnouncementModal(true)
+  }
+
+  function openEditAnnouncement(item: Announcement) {
+    setEditingAnnouncement(item)
+    setAnnouncementForm({
+      title: item.title,
+      body: item.body,
+      type: item.type,
+      status: item.status,
+      image_url: item.image_url || '',
+      cta_label: item.cta_label || '',
+      cta_url: item.cta_url || '',
+      starts_at: dateInputValue(item.starts_at),
+      ends_at: dateInputValue(item.ends_at),
+      target_account_ids: (item.target_accounts || []).map(target => target.account_id),
+    })
+    setShowAnnouncementModal(true)
+  }
+
+  async function uploadAnnouncementImage(file?: File | null) {
+    if (!file) return
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch('/api/admin/announcements/upload', { method: 'POST', headers: authHeaders, body: formData })
+    const data = await res.json()
+    if (data.success) {
+      setAnnouncementForm(f => ({ ...f, image_url: data.media_url || '' }))
+    } else {
+      alert(data.error || 'No se pudo subir la imagen')
+    }
+  }
+
+  async function saveAnnouncement() {
+    if (!announcementForm.title.trim() || !announcementForm.body.trim()) {
+      alert('El título y el mensaje son obligatorios')
+      return
+    }
+    const method = editingAnnouncement ? 'PUT' : 'POST'
+    const url = editingAnnouncement ? `/api/admin/announcements/${editingAnnouncement.id}` : '/api/admin/announcements'
+    const res = await fetch(url, { method, headers, body: JSON.stringify(announcementForm) })
+    const data = await res.json()
+    if (data.success) {
+      setShowAnnouncementModal(false)
+      setEditingAnnouncement(null)
+      fetchAnnouncements()
+    } else {
+      alert(data.error || 'No se pudo guardar el aviso')
+    }
+  }
+
+  async function updateAnnouncementStatus(item: Announcement, status: Announcement['status']) {
+    const res = await fetch(`/api/admin/announcements/${item.id}/status`, { method: 'PATCH', headers, body: JSON.stringify({ status }) })
+    const data = await res.json()
+    if (data.success) fetchAnnouncements()
+    else alert(data.error || 'No se pudo actualizar el aviso')
+  }
+
+  async function deleteAnnouncement(item: Announcement) {
+    if (!confirm(`¿Eliminar el aviso "${item.title}"?`)) return
+    const res = await fetch(`/api/admin/announcements/${item.id}`, { method: 'DELETE', headers })
+    const data = await res.json()
+    if (data.success) fetchAnnouncements()
+    else alert(data.error || 'No se pudo eliminar el aviso')
+  }
+
+  async function updateFeedback(item: FeedbackSuggestion, patch: Partial<Pick<FeedbackSuggestion, 'status' | 'admin_note'>>) {
+    const res = await fetch(`/api/admin/feedback/${item.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: patch.status ?? item.status, admin_note: patch.admin_note ?? item.admin_note }),
+    })
+    const data = await res.json()
+    if (data.success) fetchFeedback()
+    else alert(data.error || 'No se pudo actualizar la sugerencia')
+  }
 
   // Role CRUD
   function openCreateRole() {
@@ -793,6 +1024,15 @@ export default function AdminPage() {
     return roleLabels[role] || role
   }
 
+  const searchPlaceholder = {
+    requests: 'Buscar solicitudes...',
+    accounts: 'Buscar cuentas...',
+    users: 'Buscar usuarios...',
+    roles: 'Buscar roles...',
+    announcements: 'Buscar avisos...',
+    feedback: 'Buscar sugerencias...',
+  }[tab]
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full bg-slate-900">
@@ -815,7 +1055,16 @@ export default function AdminPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit mb-4">
+      <div className="flex flex-wrap gap-1 bg-gray-100 p-1 rounded-lg w-fit mb-4">
+        <button
+          onClick={() => { setTab('requests'); setSearch('') }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            tab === 'requests' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Inbox className="w-4 h-4" /> Solicitudes
+          <span className={`ml-1 rounded-full px-2 py-0.5 text-xs ${pendingRequests.length > 0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-200 text-gray-600'}`}>{pendingRequests.length}</span>
+        </button>
         <button
           onClick={() => { setTab('accounts'); setSearch('') }}
           className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -843,6 +1092,24 @@ export default function AdminPage() {
           <Lock className="w-4 h-4" /> Roles
           <span className="ml-1 bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 text-xs">{roles.length}</span>
         </button>
+        <button
+          onClick={() => { setTab('announcements'); setSearch('') }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            tab === 'announcements' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Bell className="w-4 h-4" /> Avisos
+          <span className="ml-1 bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 text-xs">{announcements.length}</span>
+        </button>
+        <button
+          onClick={() => { setTab('feedback'); setSearch('') }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            tab === 'feedback' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <MessageSquareText className="w-4 h-4" /> Sugerencias
+          <span className="ml-1 bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 text-xs">{feedback.length}</span>
+        </button>
       </div>
 
       {/* Search & Actions */}
@@ -851,7 +1118,7 @@ export default function AdminPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
-            placeholder={tab === 'accounts' ? 'Buscar cuentas...' : tab === 'users' ? 'Buscar usuarios...' : 'Buscar roles...'}
+            placeholder={searchPlaceholder}
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500 focus:border-transparent"
@@ -876,7 +1143,34 @@ export default function AdminPage() {
           </select>
         )}
 
-        {tab !== 'roles' ? (
+        {tab === 'feedback' && (
+          <>
+            <select
+              value={feedbackStatusFilter}
+              onChange={e => setFeedbackStatusFilter(e.target.value)}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+            >
+              <option value="">Todos los estados</option>
+              <option value="new">Nuevas</option>
+              <option value="reviewing">Revisando</option>
+              <option value="planned">Planificadas</option>
+              <option value="resolved">Resueltas</option>
+              <option value="closed">Cerradas</option>
+            </select>
+            <select
+              value={feedbackAccountFilter}
+              onChange={e => setFeedbackAccountFilter(e.target.value)}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+            >
+              <option value="">Todas las cuentas</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.account_code || a.name} · {a.company_name || a.name}</option>
+              ))}
+            </select>
+          </>
+        )}
+
+        {tab === 'accounts' || tab === 'users' ? (
           <button
             onClick={tab === 'accounts' ? openCreateAccount : openCreateUser}
             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium whitespace-nowrap"
@@ -884,19 +1178,88 @@ export default function AdminPage() {
             <Plus className="w-4 h-4" />
             {tab === 'accounts' ? 'Nueva Cuenta' : 'Nuevo Usuario'}
           </button>
-        ) : (
+        ) : tab === 'roles' ? (
           <button
             onClick={openCreateRole}
             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium whitespace-nowrap"
           >
             <Plus className="w-4 h-4" /> Nuevo Rol
           </button>
-        )}
+        ) : tab === 'announcements' ? (
+          <button
+            onClick={openCreateAnnouncement}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" /> Nuevo Aviso
+          </button>
+        ) : null}
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-auto bg-white rounded-xl border border-gray-200">
-        {tab === 'accounts' ? (
+        {tab === 'requests' ? (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Solicitud</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Contacto</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Correo</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Fecha</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Riesgo</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Estado</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-500">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredRequests.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No hay solicitudes pendientes.</td></tr>
+              ) : filteredRequests.map(a => (
+                <tr key={a.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    <div className="font-semibold text-gray-900">{a.account_code || a.name}</div>
+                    <div className="text-sm text-gray-700">{a.company_name || a.name}</div>
+                    <span className="inline-flex mt-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">Web</span>
+                  </td>
+                  <td className="px-4 py-3 text-gray-700">{a.signup_contact_name || 'Sin contacto'}</td>
+                  <td className="px-4 py-3">
+                    <div className="text-gray-700">{a.signup_email || 'Sin correo'}</div>
+                    <div className="text-xs text-gray-400">{a.signup_email_domain || ''}</div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">
+                    {a.signup_created_at ? new Date(a.signup_created_at).toLocaleString() : new Date(a.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const risk = riskLabel(a.signup_risk_score)
+                      return <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${risk.cls}`}>{risk.text}</span>
+                    })()}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${reviewColors[a.review_status] || 'bg-gray-100 text-gray-700'}`}>
+                      {reviewLabels[a.review_status] || a.review_status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <button onClick={() => reviewAccount(a, 'approved')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Aprobar
+                      </button>
+                      <button onClick={() => reviewAccount(a, 'rejected')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-200 text-red-700 text-xs font-semibold hover:bg-red-50">
+                        <XCircle className="w-3.5 h-3.5" /> Rechazar
+                      </button>
+                      <button onClick={() => reviewAccount(a, 'suspended')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-700 text-xs font-semibold hover:bg-rose-50">
+                        <Ban className="w-3.5 h-3.5" /> Suspender
+                      </button>
+                      <button onClick={() => openAccountDetail(a)} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded" title="Ver detalle">
+                        <Eye className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : tab === 'accounts' ? (
           <table className="w-full text-sm">
             <thead className="bg-gray-50 sticky top-0">
               <tr>
@@ -1063,7 +1426,7 @@ export default function AdminPage() {
                       <button onClick={() => openAssignModal(u)} className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded" title="Gestionar cuentas">
                         <Link2 className="w-4 h-4" />
                       </button>
-                      <button onClick={() => { setPasswordUserId(u.id); setNewPassword(''); setShowPasswordModal(true) }} className="p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded" title="Cambiar contraseña">
+                      <button onClick={() => { setPasswordUserId(u.id); setNewPassword(''); setNewPasswordConfirm(''); setShowPasswordModal(true) }} className="p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded" title="Cambiar contraseña">
                         <KeyRound className="w-4 h-4" />
                       </button>
                       <button onClick={() => toggleUser(u.id)} className="p-1.5 text-gray-400 hover:text-yellow-600 hover:bg-yellow-50 rounded" title={u.is_active ? 'Desactivar' : 'Activar'}>
@@ -1141,9 +1504,316 @@ export default function AdminPage() {
                 </tr>
               ))}
             </tbody>
-	          </table>
-	        ) : null}
+          </table>
+        ) : tab === 'announcements' ? (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Aviso</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Destino</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Fechas</th>
+                <th className="text-center px-4 py-3 font-medium text-gray-500">Lecturas</th>
+                <th className="text-center px-4 py-3 font-medium text-gray-500">Estado</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-500">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredAnnouncements.length === 0 ? (
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No hay avisos configurados.</td></tr>
+              ) : filteredAnnouncements.map(item => (
+                <tr key={item.id} className="hover:bg-gray-50 align-top">
+                  <td className="px-4 py-3 max-w-md">
+                    <div className="flex items-start gap-3">
+                      {item.image_url ? <img src={item.image_url} alt="" className="w-16 h-12 object-cover rounded-lg border border-gray-200" /> : <div className="w-16 h-12 rounded-lg border border-dashed border-gray-200 bg-gray-50" />}
+                      <div>
+                        <div className="font-semibold text-gray-900">{item.title}</div>
+                        <div className="text-xs text-gray-500 line-clamp-2 mt-1">{item.body}</div>
+                        <span className="inline-flex mt-2 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">{item.type}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">
+                    {(item.target_accounts || []).length === 0 ? 'Todas las cuentas' : (
+                      <div className="flex flex-wrap gap-1 max-w-xs">
+                        {(item.target_accounts || []).map(target => (
+                          <span key={target.account_id} className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">
+                            {target.account_code || target.company_name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">
+                    <div>{item.starts_at ? new Date(item.starts_at).toLocaleDateString() : 'Inmediato'}</div>
+                    <div className="text-xs text-gray-400">{item.ends_at ? `hasta ${new Date(item.ends_at).toLocaleDateString()}` : 'sin vencimiento'}</div>
+                  </td>
+                  <td className="px-4 py-3 text-center text-gray-600">{item.read_count || 0}</td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                      item.status === 'published' ? 'bg-emerald-100 text-emerald-700' : item.status === 'archived' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'
+                    }`}>
+                      {item.status === 'published' ? 'Publicado' : item.status === 'archived' ? 'Archivado' : 'Borrador'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      {item.status !== 'published' && (
+                        <button onClick={() => updateAnnouncementStatus(item, 'published')} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded" title="Publicar">
+                          <CheckCircle2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      {item.status !== 'archived' && (
+                        <button onClick={() => updateAnnouncementStatus(item, 'archived')} className="p-1.5 text-gray-400 hover:text-slate-600 hover:bg-slate-50 rounded" title="Archivar">
+                          <Ban className="w-4 h-4" />
+                        </button>
+                      )}
+                      <button onClick={() => openEditAnnouncement(item)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Editar">
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => deleteAnnouncement(item)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded" title="Eliminar">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : tab === 'feedback' ? (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Sugerencia</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Cuenta</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Usuario</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Página</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Nota interna</th>
+                <th className="text-center px-4 py-3 font-medium text-gray-500">Estado</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredFeedback.length === 0 ? (
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No hay sugerencias para mostrar.</td></tr>
+              ) : filteredFeedback.map(item => (
+                <tr key={item.id} className="hover:bg-gray-50 align-top">
+                  <td className="px-4 py-3 max-w-md">
+                    <div className="font-semibold text-gray-900">{item.subject}</div>
+                    <div className="text-xs text-gray-500 mt-1 whitespace-pre-wrap">{item.detail}</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">{item.category}</span>
+                      <span className="text-xs text-gray-400">{new Date(item.created_at).toLocaleString()}</span>
+                    </div>
+                    {item.image_url && (
+                      <a href={item.image_url} target="_blank" className="inline-flex items-center gap-1.5 text-xs text-emerald-700 hover:underline mt-2">
+                        <ExternalLink className="w-3.5 h-3.5" /> Ver imagen adjunta
+                      </a>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">
+                    <div className="font-medium text-gray-900">{item.account_code}</div>
+                    <div className="text-xs text-gray-500">{item.company_name}</div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">
+                    <div>{item.user_name || 'Usuario'}</div>
+                    <div className="text-xs text-gray-400">{item.user_email}</div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-500 max-w-[220px] break-all">
+                    {item.page_url || 'Sin página'}
+                  </td>
+                  <td className="px-4 py-3 min-w-[220px]">
+                    <textarea
+                      defaultValue={item.admin_note}
+                      onBlur={e => {
+                        if (e.target.value !== item.admin_note) updateFeedback(item, { admin_note: e.target.value })
+                      }}
+                      className="w-full min-h-[70px] px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                      placeholder="Nota para seguimiento interno..."
+                    />
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <select
+                      value={item.status}
+                      onChange={e => updateFeedback(item, { status: e.target.value as FeedbackSuggestion['status'] })}
+                      className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:ring-2 focus:ring-green-500"
+                    >
+                      <option value="new">Nueva</option>
+                      <option value="reviewing">Revisando</option>
+                      <option value="planned">Planificada</option>
+                      <option value="resolved">Resuelta</option>
+                      <option value="closed">Cerrada</option>
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
       </div>
+
+      {/* Announcement Modal */}
+      {showAnnouncementModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">{editingAnnouncement ? 'Editar Aviso' : 'Nuevo Aviso'}</h2>
+                <p className="text-sm text-gray-500 mt-1">Configura un popup in-app para usuarios autenticados.</p>
+              </div>
+              <button onClick={() => setShowAnnouncementModal(false)} className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Título</label>
+                  <input
+                    value={announcementForm.title}
+                    onChange={e => setAnnouncementForm(f => ({ ...f, title: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                    placeholder="Actualización importante"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
+                    <select
+                      value={announcementForm.type}
+                      onChange={e => setAnnouncementForm(f => ({ ...f, type: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                    >
+                      <option value="info">Info</option>
+                      <option value="warning">Alerta</option>
+                      <option value="update">Novedad</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
+                    <select
+                      value={announcementForm.status}
+                      onChange={e => setAnnouncementForm(f => ({ ...f, status: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                    >
+                      <option value="draft">Borrador</option>
+                      <option value="published">Publicado</option>
+                      <option value="archived">Archivado</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Mensaje</label>
+                <textarea
+                  value={announcementForm.body}
+                  onChange={e => setAnnouncementForm(f => ({ ...f, body: e.target.value }))}
+                  className="w-full min-h-[110px] px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                  placeholder="Escribe el aviso que verá el usuario..."
+                />
+              </div>
+              <div className="grid md:grid-cols-[1fr_auto] gap-4 items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Imagen opcional</label>
+                  <input
+                    value={announcementForm.image_url}
+                    onChange={e => setAnnouncementForm(f => ({ ...f, image_url: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                    placeholder="/api/platform-media/file/..."
+                  />
+                </div>
+                <label className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 cursor-pointer">
+                  <Upload className="w-4 h-4" />
+                  Subir imagen
+                  <input type="file" accept="image/*" className="hidden" onChange={e => uploadAnnouncementImage(e.target.files?.[0])} />
+                </label>
+              </div>
+              {announcementForm.image_url && (
+                <img src={announcementForm.image_url} alt="" className="w-full max-h-48 object-cover rounded-lg border border-gray-200" />
+              )}
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Texto CTA opcional</label>
+                  <input
+                    value={announcementForm.cta_label}
+                    onChange={e => setAnnouncementForm(f => ({ ...f, cta_label: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                    placeholder="Ver detalles"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">URL CTA opcional</label>
+                  <input
+                    value={announcementForm.cta_url}
+                    onChange={e => setAnnouncementForm(f => ({ ...f, cta_url: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                    placeholder="https://..."
+                  />
+                </div>
+              </div>
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Inicio opcional</label>
+                  <input
+                    type="date"
+                    value={announcementForm.starts_at}
+                    onChange={e => setAnnouncementForm(f => ({ ...f, starts_at: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Fin opcional</label>
+                  <input
+                    type="date"
+                    value={announcementForm.ends_at}
+                    onChange={e => setAnnouncementForm(f => ({ ...f, ends_at: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Destino</label>
+                <div className="rounded-lg border border-gray-200 p-3 max-h-44 overflow-y-auto">
+                  <label className="flex items-center gap-2 text-sm text-gray-700 mb-2">
+                    <input
+                      type="checkbox"
+                      checked={announcementForm.target_account_ids.length === 0}
+                      onChange={() => setAnnouncementForm(f => ({ ...f, target_account_ids: [] }))}
+                    />
+                    Todas las cuentas
+                  </label>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {accounts.map(account => {
+                      const checked = announcementForm.target_account_ids.includes(account.id)
+                      return (
+                        <label key={account.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${checked ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-gray-100 text-gray-600'}`}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={e => setAnnouncementForm(f => ({
+                              ...f,
+                              target_account_ids: e.target.checked
+                                ? [...f.target_account_ids, account.id]
+                                : f.target_account_ids.filter(id => id !== account.id),
+                            }))}
+                          />
+                          <span className="truncate">{account.account_code || account.name} · {account.company_name || account.name}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3 bg-white shrink-0">
+              <button onClick={() => setShowAnnouncementModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
+                Cancelar
+              </button>
+              <button onClick={saveAnnouncement} className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700">
+                {editingAnnouncement ? 'Guardar' : 'Crear Aviso'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Account Detail Drawer */}
       {detailAccount && (
@@ -1601,14 +2271,40 @@ export default function AdminPage() {
                 />
               </div>
               {!editingUser && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
-                  <input
-                    type="password"
-                    value={userForm.password}
-                    onChange={e => setUserForm(f => ({ ...f, password: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
-                  />
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <label className="block text-sm font-medium text-gray-700">Contraseña inicial</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const pwd = generatedPassword()
+                        setUserForm(f => ({ ...f, password: pwd }))
+                        setUserPasswordConfirm(pwd)
+                      }}
+                      className="text-xs font-semibold text-emerald-700 hover:underline"
+                    >
+                      Generar contraseña fuerte
+                    </button>
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <input
+                      type="text"
+                      value={userForm.password}
+                      onChange={e => setUserForm(f => ({ ...f, password: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                      placeholder="Mínimo 10, Aa1!"
+                    />
+                    <input
+                      type="text"
+                      value={userPasswordConfirm}
+                      onChange={e => setUserPasswordConfirm(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                      placeholder="Repite la contraseña"
+                    />
+                  </div>
+                  <p className={`mt-2 text-xs ${isStrongPassword(userForm.password) ? 'text-emerald-700' : 'text-gray-500'}`}>
+                    {isStrongPassword(userForm.password) ? 'Contraseña fuerte.' : `Debe incluir: ${passwordIssues(userForm.password).join(', ') || 'contraseña'}.`}
+                  </p>
                 </div>
               )}
               {editingUser && <div>
@@ -1643,24 +2339,47 @@ export default function AdminPage() {
             <div className="p-6 border-b border-gray-200">
               <h2 className="text-lg font-semibold text-gray-900">Cambiar Contraseña</h2>
             </div>
-            <div className="p-6">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Nueva Contraseña</label>
+            <div className="p-6 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <label className="block text-sm font-medium text-gray-700">Nueva Contraseña</label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const pwd = generatedPassword()
+                    setNewPassword(pwd)
+                    setNewPasswordConfirm(pwd)
+                  }}
+                  className="text-xs font-semibold text-emerald-700 hover:underline"
+                >
+                  Generar
+                </button>
+              </div>
               {(() => {
                 const target = users.find(u => u.id === passwordUserId)
                 return target ? (
-                  <p className="mb-3 text-xs text-gray-500">
+                  <p className="text-xs text-gray-500">
                     Login: <span className="font-medium text-gray-700">{target.username}</span>
                     {target.email && target.email !== target.username ? <> o <span className="font-medium text-gray-700">{target.email}</span></> : null}
                   </p>
                 ) : null
               })()}
               <input
-                type="password"
+                type="text"
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
                 placeholder="Ingrese nueva contraseña"
               />
+              <input
+                type="text"
+                value={newPasswordConfirm}
+                onChange={e => setNewPasswordConfirm(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                placeholder="Repite la contraseña"
+              />
+              <p className={`text-xs ${isStrongPassword(newPassword) ? 'text-emerald-700' : 'text-gray-500'}`}>
+                {isStrongPassword(newPassword) ? 'Contraseña fuerte.' : `Debe incluir: ${passwordIssues(newPassword).join(', ') || 'contraseña'}.`}
+              </p>
             </div>
             <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
               <button onClick={() => setShowPasswordModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">

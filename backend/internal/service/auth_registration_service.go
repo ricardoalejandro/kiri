@@ -65,8 +65,8 @@ func (s *AuthService) RegisterAccount(ctx context.Context, input RegisterAccount
 	if email == "" || !strings.Contains(email, "@") {
 		return nil, fmt.Errorf("ingresa un correo válido")
 	}
-	if len(input.Password) < 8 {
-		return nil, fmt.Errorf("la contraseña debe tener al menos 8 caracteres")
+	if err := ValidateStrongPassword(input.Password); err != nil {
+		return nil, err
 	}
 
 	plan, err := s.repos.Subscription.GetPlan(ctx, "free")

@@ -5,23 +5,23 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/naperu/kiri/internal/domain"
 	"github.com/naperu/kiri/internal/service"
 )
 
 type registerRequest struct {
-	AccountName    string `json:"account_name"`
-	DisplayName    string `json:"display_name"`
-	Email          string `json:"email"`
-	Password       string `json:"password"`
-	PlanCode       string `json:"plan_code"`
-	TurnstileToken string `json:"turnstile_token"`
-	Website        string `json:"website"`
-	FormStartedAt  int64  `json:"form_started_at"`
-	Referrer       string `json:"referrer"`
-	UTMSource      string `json:"utm_source"`
-	UTMMedium      string `json:"utm_medium"`
-	UTMCampaign    string `json:"utm_campaign"`
+	AccountName     string `json:"account_name"`
+	DisplayName     string `json:"display_name"`
+	Email           string `json:"email"`
+	Password        string `json:"password"`
+	PasswordConfirm string `json:"password_confirm"`
+	PlanCode        string `json:"plan_code"`
+	TurnstileToken  string `json:"turnstile_token"`
+	Website         string `json:"website"`
+	FormStartedAt   int64  `json:"form_started_at"`
+	Referrer        string `json:"referrer"`
+	UTMSource       string `json:"utm_source"`
+	UTMMedium       string `json:"utm_medium"`
+	UTMCampaign     string `json:"utm_campaign"`
 }
 
 func (s *Server) handleRegister(c *fiber.Ctx) error {
@@ -30,6 +30,9 @@ func (s *Server) handleRegister(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"success": false, "error": "Invalid request"})
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if req.Password != req.PasswordConfirm {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"success": false, "error": "Las contraseñas no coinciden"})
+	}
 
 	securityContext, err := s.validateSignupAbuseControls(c, email, req.TurnstileToken, req.Website, req.FormStartedAt)
 	if err != nil {
@@ -84,67 +87,13 @@ func (s *Server) handleRegister(c *fiber.Ctx) error {
 		"turnstile_success": securityContext.TurnstileSuccess,
 	})
 
-	token, refreshToken, user, userAccounts, err := s.services.Auth.Login(c.Context(), email, req.Password, s.cfg.JWTSecret)
-	if err != nil {
-		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "account": result.Account, "requires_login": true})
-	}
-	s.setAuthCookies(c, token, refreshToken)
-
-	accountsList := make([]fiber.Map, 0, len(userAccounts))
-	activeRole := user.Role
-	permissions := []string{}
-	for _, userAccount := range userAccounts {
-		accountsList = append(accountsList, fiber.Map{
-			"account_id":              userAccount.AccountID,
-			"account_name":            userAccount.AccountName,
-			"account_code":            userAccount.AccountCode,
-			"account_company_name":    userAccount.AccountCompanyName,
-			"account_slug":            userAccount.AccountSlug,
-			"account_creation_source": userAccount.AccountCreationSource,
-			"account_review_status":   userAccount.AccountReviewStatus,
-			"role":                    userAccount.Role,
-			"is_default":              userAccount.IsDefault,
-		})
-		if userAccount.AccountID == user.AccountID {
-			activeRole = userAccount.Role
-			if userAccount.Permissions != nil {
-				permissions = userAccount.Permissions
-			}
-		}
-	}
-	if user.IsSuperAdmin || activeRole == domain.RoleSuperAdmin {
-		permissions = []string{domain.PermAll}
-	} else if len(permissions) == 0 {
-		permissions, _ = s.repos.UserAccount.GetUserPermissions(c.Context(), user.ID, user.AccountID)
-	}
-	isAdmin := user.IsAdmin || user.IsSuperAdmin || activeRole == domain.RoleAdmin || activeRole == domain.RoleSuperAdmin
-	s.recordSecurityEventWithRefs(c.Context(), "login_success", email, c, &user.AccountID, &user.ID, &result.SignupRequestID, map[string]interface{}{
-		"source":       "signup",
-		"account_code": result.Account.AccountCode,
-	})
-
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success":      true,
-		"account":      result.Account,
-		"subscription": result.Subscription,
-		"user": fiber.Map{
-			"id":                    user.ID,
-			"username":              user.Username,
-			"email":                 user.Email,
-			"display_name":          user.DisplayName,
-			"is_admin":              isAdmin,
-			"is_super_admin":        user.IsSuperAdmin,
-			"role":                  activeRole,
-			"account_id":            user.AccountID,
-			"account_name":          user.AccountName,
-			"account_code":          result.Account.AccountCode,
-			"account_company_name":  result.Account.CompanyName,
-			"account_review_status": result.Account.ReviewStatus,
-			"plan":                  result.Subscription.PlanCode,
-			"subscription_status":   result.Subscription.Status,
-			"permissions":           permissions,
-		},
-		"accounts": accountsList,
+		"success":        true,
+		"account":        result.Account,
+		"subscription":   result.Subscription,
+		"requires_login": false,
+		"pending_review": true,
+		"message":        "Tu cuenta fue recibida y está pendiente de aprobación.",
 	})
 }
 

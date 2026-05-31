@@ -35,8 +35,9 @@ export default function SignupPage() {
   const router = useRouter()
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
   const [loading, setLoading] = useState(false)
-  const [form, setForm] = useState({ account_name: '', display_name: '', email: '', password: '' })
+  const [form, setForm] = useState({ account_name: '', display_name: '', email: '', password: '', password_confirm: '' })
   const [website, setWebsite] = useState('')
   const [formStartedAt] = useState(() => Date.now())
   const [turnstileSiteKey, setTurnstileSiteKey] = useState(fallbackTurnstileSiteKey)
@@ -104,6 +105,16 @@ export default function SignupPage() {
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
+    setSuccessMessage('')
+    if (form.password !== form.password_confirm) {
+      setError('Las contraseñas no coinciden.')
+      return
+    }
+    const issues = passwordIssues(form.password)
+    if (issues.length > 0) {
+      setError(`Usa una contraseña fuerte: ${issues.join(', ')}.`)
+      return
+    }
     if (!signupEnabled || !turnstileSiteKey) {
       setError('Registro temporalmente no disponible. Falta configurar la verificación de seguridad.')
       return
@@ -141,7 +152,8 @@ export default function SignupPage() {
         router.refresh()
         return
       }
-      router.push('/login')
+      setSuccessMessage(data.message || 'Tu cuenta fue recibida y está pendiente de aprobación.')
+      resetTurnstile()
     } catch {
       setError('Error de conexión')
       resetTurnstile()
@@ -149,6 +161,36 @@ export default function SignupPage() {
       setLoading(false)
     }
   }
+
+  function passwordIssues(password: string) {
+    const issues: string[] = []
+    if (password.length < 10) issues.push('10 caracteres')
+    if (!/[A-Z]/.test(password)) issues.push('mayúscula')
+    if (!/[a-z]/.test(password)) issues.push('minúscula')
+    if (!/\d/.test(password)) issues.push('número')
+    if (!/[^A-Za-z0-9]/.test(password)) issues.push('símbolo')
+    return issues
+  }
+
+  function generatePassword() {
+    const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+    const lower = 'abcdefghijkmnopqrstuvwxyz'
+    const digits = '23456789'
+    const symbols = '!@#$%*?'
+    const all = upper + lower + digits + symbols
+    const pick = (chars: string) => chars[Math.floor(Math.random() * chars.length)]
+    const chars = [pick(upper), pick(lower), pick(digits), pick(symbols)]
+    for (let i = chars.length; i < 16; i++) chars.push(pick(all))
+    return chars.sort(() => Math.random() - 0.5).join('')
+  }
+
+  function applyGeneratedPassword() {
+    const password = generatePassword()
+    setForm(f => ({ ...f, password, password_confirm: password }))
+    setShowPassword(true)
+  }
+
+  const passwordStrong = passwordIssues(form.password).length === 0
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -199,7 +241,7 @@ export default function SignupPage() {
               <div className="mt-6 rounded-xl border border-emerald-100 bg-white/70 px-4 py-3">
                 <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Registro seguro</p>
                 <p className="mt-1 text-sm text-slate-600 leading-relaxed">
-                  Cada alta automática nace con límites controlados y rol seguro por defecto.
+                  Cada solicitud queda pendiente de aprobación y nace con límites controlados.
                 </p>
               </div>
             </div>
@@ -212,6 +254,23 @@ export default function SignupPage() {
                 </div>
               )}
 
+              {successMessage ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                      <Check className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-bold text-emerald-950">Solicitud recibida</h2>
+                      <p className="text-sm text-emerald-800 mt-1 leading-relaxed">{successMessage}</p>
+                      <p className="text-xs text-emerald-700 mt-3">Cuando un superadmin la apruebe, podrás iniciar sesión con tu correo.</p>
+                      <Link href="/login" className="inline-flex items-center gap-1.5 mt-4 text-sm font-semibold text-emerald-700 hover:text-emerald-900">
+                        Ir a iniciar sesión <ArrowRight className="w-4 h-4" />
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              ) : (
               <form onSubmit={handleSignup} className="space-y-3.5">
                 <input
                   type="text"
@@ -245,14 +304,19 @@ export default function SignupPage() {
                 />
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">Contraseña</label>
+                  <div className="flex items-center justify-between gap-3 mb-1.5">
+                    <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider">Contraseña</label>
+                    <button type="button" onClick={applyGeneratedPassword} className="text-xs font-semibold text-emerald-700 hover:underline" disabled={loading}>
+                      Generar segura
+                    </button>
+                  </div>
                   <div className="relative">
                     <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-slate-400" />
                     <input
                       type={showPassword ? 'text' : 'password'}
                       value={form.password}
                       onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                      placeholder="mínimo 8 caracteres"
+                      placeholder="mínimo 10, Aa1!"
                       className="w-full pl-11 pr-11 py-2.5 bg-white border border-slate-300 text-slate-900 placeholder:text-slate-400 rounded-xl focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 outline-none transition-all text-sm"
                       minLength={8}
                       required
@@ -262,6 +326,19 @@ export default function SignupPage() {
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={form.password_confirm}
+                    onChange={(e) => setForm((f) => ({ ...f, password_confirm: e.target.value }))}
+                    placeholder="repite la contraseña"
+                    className="mt-2 w-full px-3.5 py-2.5 bg-white border border-slate-300 text-slate-900 placeholder:text-slate-400 rounded-xl focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 outline-none transition-all text-sm"
+                    minLength={10}
+                    required
+                    disabled={loading}
+                  />
+                  <p className={`mt-1.5 text-[11px] leading-snug ${passwordStrong ? 'text-emerald-700' : 'text-slate-400'}`}>
+                    {passwordStrong ? 'Contraseña fuerte.' : `Incluye ${passwordIssues(form.password).join(', ') || 'una contraseña segura'}.`}
+                  </p>
                 </div>
 
                 <div className="min-h-[70px] flex items-center justify-center pt-1">
@@ -283,11 +360,12 @@ export default function SignupPage() {
                     <div className="animate-spin rounded-full h-5 w-5 border-2 border-white/30 border-t-white" />
                   ) : (
                     <>
-                      Crear cuenta y empezar <ArrowRight className="w-4 h-4" />
+                      Enviar solicitud <ArrowRight className="w-4 h-4" />
                     </>
                   )}
                 </button>
               </form>
+              )}
 
               <div className="mt-6 text-center">
                 <p className="text-sm text-slate-500">

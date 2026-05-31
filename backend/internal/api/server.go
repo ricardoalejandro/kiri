@@ -215,12 +215,17 @@ func (s *Server) setupRoutes() {
 
 	// Media proxy - authenticated access for displaying private account media.
 	protected.Get("/media/file/*", s.handleMediaProxy)
+	protected.Get("/platform-media/file/*", s.handlePlatformMediaProxy)
 
 	// User routes
 	protected.Get("/me", s.handleGetMe)
 	protected.Get("/me/accounts", s.handleGetMyAccounts)
 	protected.Post("/auth/activity", s.handleAuthActivity)
 	protected.Post("/auth/switch-account", s.handleSwitchAccount)
+	protected.Get("/announcements/active", s.handleGetActiveAnnouncements)
+	protected.Post("/announcements/:id/ack", s.handleAckAnnouncement)
+	protected.Post("/feedback", s.handleCreateFeedback)
+	protected.Post("/feedback/upload", s.handleFeedbackUpload)
 
 	// Settings routes
 	protected.Get("/plans", s.handleListPlans)
@@ -551,6 +556,18 @@ func (s *Server) setupRoutes() {
 	adminRoles.Post("/", s.handleAdminCreateRole)
 	adminRoles.Put("/:id", s.handleAdminUpdateRole)
 	adminRoles.Delete("/:id", s.handleAdminDeleteRole)
+
+	adminAnnouncements := admin.Group("/announcements")
+	adminAnnouncements.Get("/", s.handleAdminGetAnnouncements)
+	adminAnnouncements.Post("/", s.handleAdminCreateAnnouncement)
+	adminAnnouncements.Post("/upload", s.handleAdminAnnouncementUpload)
+	adminAnnouncements.Put("/:id", s.handleAdminUpdateAnnouncement)
+	adminAnnouncements.Patch("/:id/status", s.handleAdminUpdateAnnouncementStatus)
+	adminAnnouncements.Delete("/:id", s.handleAdminDeleteAnnouncement)
+
+	adminFeedback := admin.Group("/feedback")
+	adminFeedback.Get("/", s.handleAdminGetFeedback)
+	adminFeedback.Patch("/:id", s.handleAdminUpdateFeedback)
 
 }
 
@@ -1291,8 +1308,8 @@ func (s *Server) handleChangePassword(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
 	}
 
-	if len(req.NewPassword) < 8 {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "La contraseña debe tener al menos 8 caracteres"})
+	if err := service.ValidateStrongPassword(req.NewPassword); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
 	user, err := s.services.Auth.GetUser(c.Context(), userID)
@@ -11310,6 +11327,602 @@ func (s *Server) handleDeleteSavedSticker(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// --- Platform communication handlers ---
+
+type announcementPayload struct {
+	Title            string   `json:"title"`
+	Body             string   `json:"body"`
+	Type             string   `json:"type"`
+	Status           string   `json:"status"`
+	ImageURL         string   `json:"image_url"`
+	CTALabel         string   `json:"cta_label"`
+	CTAURL           string   `json:"cta_url"`
+	StartsAt         string   `json:"starts_at"`
+	EndsAt           string   `json:"ends_at"`
+	TargetAccountIDs []string `json:"target_account_ids"`
+}
+
+func platformMediaProxyURL(objectKey string) string {
+	return "/api/platform-media/file/" + url.PathEscape(objectKey)
+}
+
+func platformMediaContentType(objectKey string) string {
+	switch strings.ToLower(filepath.Ext(objectKey)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func isAllowedPlatformImage(contentType, filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		switch ext {
+		case ".jpg", ".jpeg", ".png", ".gif", ".webp":
+			return true
+		}
+	}
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanPlatformFilename(filename string) string {
+	base := filepath.Base(strings.TrimSpace(filename))
+	if base == "." || base == "/" || base == "" {
+		return "image"
+	}
+	replacer := strings.NewReplacer(" ", "_", "/", "_", "\\", "_", ":", "_")
+	return replacer.Replace(base)
+}
+
+func (s *Server) handlePlatformMediaProxy(c *fiber.Ctx) error {
+	if s.storage == nil {
+		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Storage not configured"})
+	}
+	objectKey := c.Params("*")
+	if decoded, err := url.PathUnescape(objectKey); err == nil {
+		objectKey = decoded
+	}
+	if objectKey == "" || strings.Contains(objectKey, "..") || strings.HasPrefix(objectKey, "/") || !strings.HasPrefix(objectKey, "platform/") {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"success": false, "error": "File not allowed"})
+	}
+
+	claims, _ := c.Locals("claims").(*service.JWTClaims)
+	accountID := c.Locals("account_id").(uuid.UUID)
+	switch {
+	case strings.HasPrefix(objectKey, "platform/announcements/"):
+	case strings.HasPrefix(objectKey, "platform/feedback/"+accountID.String()+"/"):
+	case claims != nil && (claims.IsSuperAdmin || claims.Role == domain.RoleSuperAdmin):
+	default:
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"success": false, "error": "File not allowed"})
+	}
+
+	data, err := s.storage.GetFile(c.Context(), objectKey)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "File not found"})
+	}
+	c.Set("Content-Type", platformMediaContentType(objectKey))
+	c.Set("Cache-Control", "private, max-age=3600")
+	c.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", filepath.Base(objectKey)))
+	return c.Send(data)
+}
+
+func (s *Server) handlePlatformImageUpload(c *fiber.Ctx, folder string, adminOnly bool) error {
+	if s.storage == nil {
+		return c.Status(503).JSON(fiber.Map{"success": false, "error": "Storage not configured"})
+	}
+	if adminOnly {
+		claims, ok := c.Locals("claims").(*service.JWTClaims)
+		if !ok || (!claims.IsSuperAdmin && claims.Role != domain.RoleSuperAdmin) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"success": false, "error": "Solo superadmins pueden subir este archivo"})
+		}
+	}
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "No file provided"})
+	}
+	if file.Size > 5*1024*1024 {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "La imagen debe pesar máximo 5 MB"})
+	}
+	contentType := file.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if !isAllowedPlatformImage(contentType, file.Filename) {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Solo se permiten imágenes JPG, PNG, GIF o WebP"})
+	}
+	src, err := file.Open()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "Failed to read file"})
+	}
+	defer src.Close()
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "Failed to read file"})
+	}
+	cleanName := cleanPlatformFilename(file.Filename)
+	objectKey := "platform/" + strings.Trim(folder, "/") + "/" + uuid.New().String() + "_" + cleanName
+	if _, err := s.storage.UploadObject(c.Context(), objectKey, data, contentType); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "Failed to upload: " + err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"success":    true,
+		"object_key": objectKey,
+		"media_url":  platformMediaProxyURL(objectKey),
+	})
+}
+
+func (s *Server) handleAdminAnnouncementUpload(c *fiber.Ctx) error {
+	return s.handlePlatformImageUpload(c, "announcements", true)
+}
+
+func (s *Server) handleFeedbackUpload(c *fiber.Ctx) error {
+	accountID := c.Locals("account_id").(uuid.UUID)
+	return s.handlePlatformImageUpload(c, "feedback/"+accountID.String(), false)
+}
+
+func validAnnouncementType(value string) string {
+	switch value {
+	case "warning", "update":
+		return value
+	default:
+		return "info"
+	}
+}
+
+func validAnnouncementStatus(value string) string {
+	switch value {
+	case "published", "archived":
+		return value
+	default:
+		return "draft"
+	}
+}
+
+func parseOptionalAdminTime(value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return &parsed, nil
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		return &parsed, nil
+	}
+	return nil, fmt.Errorf("fecha inválida")
+}
+
+func parseTargetAccountIDs(values []string) ([]uuid.UUID, error) {
+	ids := make([]uuid.UUID, 0, len(values))
+	seen := map[uuid.UUID]bool{}
+	for _, raw := range values {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("cuenta destino inválida")
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func announcementRowMap(id uuid.UUID, title, body, kind, status, imageURL, ctaLabel, ctaURL string, startsAt, endsAt *time.Time, createdBy, updatedBy string, createdAt, updatedAt time.Time, targets json.RawMessage, readCount int) fiber.Map {
+	return fiber.Map{
+		"id":              id,
+		"title":           title,
+		"body":            body,
+		"type":            kind,
+		"status":          status,
+		"image_url":       imageURL,
+		"cta_label":       ctaLabel,
+		"cta_url":         ctaURL,
+		"starts_at":       startsAt,
+		"ends_at":         endsAt,
+		"created_by":      createdBy,
+		"updated_by":      updatedBy,
+		"created_at":      createdAt,
+		"updated_at":      updatedAt,
+		"target_accounts": targets,
+		"read_count":      readCount,
+	}
+}
+
+func (s *Server) handleAdminGetAnnouncements(c *fiber.Ctx) error {
+	rows, err := s.repos.DB().Query(c.Context(), `
+		SELECT pa.id, pa.title, pa.body, pa.type, pa.status, pa.image_url, pa.cta_label, pa.cta_url,
+		       pa.starts_at, pa.ends_at, COALESCE(pa.created_by::text, ''), COALESCE(pa.updated_by::text, ''),
+		       pa.created_at, pa.updated_at,
+		       COALESCE((
+		         SELECT jsonb_agg(jsonb_build_object(
+		           'account_id', a.id,
+		           'account_code', COALESCE(a.account_code, ''),
+		           'company_name', COALESCE(NULLIF(a.company_name, ''), a.name)
+		         ) ORDER BY COALESCE(a.account_code, a.name))
+		         FROM platform_announcement_targets pat
+		         JOIN accounts a ON a.id = pat.account_id
+		         WHERE pat.announcement_id = pa.id
+		       ), '[]'::jsonb),
+		       (SELECT COUNT(*) FROM platform_announcement_reads par WHERE par.announcement_id = pa.id)
+		FROM platform_announcements pa
+		ORDER BY pa.updated_at DESC
+	`)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	defer rows.Close()
+	announcements := make([]fiber.Map, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		var title, body, kind, status, imageURL, ctaLabel, ctaURL, createdBy, updatedBy string
+		var startsAt, endsAt *time.Time
+		var createdAt, updatedAt time.Time
+		var targets json.RawMessage
+		var readCount int
+		if err := rows.Scan(&id, &title, &body, &kind, &status, &imageURL, &ctaLabel, &ctaURL, &startsAt, &endsAt, &createdBy, &updatedBy, &createdAt, &updatedAt, &targets, &readCount); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+		announcements = append(announcements, announcementRowMap(id, title, body, kind, status, imageURL, ctaLabel, ctaURL, startsAt, endsAt, createdBy, updatedBy, createdAt, updatedAt, targets, readCount))
+	}
+	return c.JSON(fiber.Map{"success": true, "announcements": announcements})
+}
+
+func (s *Server) saveAnnouncement(c *fiber.Ctx, id *uuid.UUID) error {
+	var req announcementPayload
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
+	}
+	title := trimmedLimit(req.Title, 160)
+	if title == "" {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "El título es obligatorio"})
+	}
+	body := strings.TrimSpace(req.Body)
+	if body == "" {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "El mensaje es obligatorio"})
+	}
+	startsAt, err := parseOptionalAdminTime(req.StartsAt)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	endsAt, err := parseOptionalAdminTime(req.EndsAt)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	targetIDs, err := parseTargetAccountIDs(req.TargetAccountIDs)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+
+	userID := c.Locals("user_id").(uuid.UUID)
+	tx, err := s.repos.DB().Begin(c.Context())
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	defer tx.Rollback(c.Context())
+
+	var announcementID uuid.UUID
+	if id == nil {
+		if err := tx.QueryRow(c.Context(), `
+			INSERT INTO platform_announcements (title, body, type, status, image_url, cta_label, cta_url, starts_at, ends_at, created_by, updated_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+			RETURNING id
+		`, title, body, validAnnouncementType(req.Type), validAnnouncementStatus(req.Status), strings.TrimSpace(req.ImageURL), trimmedLimit(req.CTALabel, 80), strings.TrimSpace(req.CTAURL), startsAt, endsAt, userID).Scan(&announcementID); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+	} else {
+		announcementID = *id
+		commandTag, err := tx.Exec(c.Context(), `
+			UPDATE platform_announcements
+			SET title = $2, body = $3, type = $4, status = $5, image_url = $6, cta_label = $7, cta_url = $8,
+			    starts_at = $9, ends_at = $10, updated_by = $11, updated_at = NOW()
+			WHERE id = $1
+		`, announcementID, title, body, validAnnouncementType(req.Type), validAnnouncementStatus(req.Status), strings.TrimSpace(req.ImageURL), trimmedLimit(req.CTALabel, 80), strings.TrimSpace(req.CTAURL), startsAt, endsAt, userID)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+		if commandTag.RowsAffected() == 0 {
+			return c.Status(404).JSON(fiber.Map{"success": false, "error": "Aviso no encontrado"})
+		}
+		if _, err := tx.Exec(c.Context(), `DELETE FROM platform_announcement_targets WHERE announcement_id = $1`, announcementID); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+	}
+
+	for _, targetID := range targetIDs {
+		if _, err := tx.Exec(c.Context(), `
+			INSERT INTO platform_announcement_targets (announcement_id, account_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, announcementID, targetID); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+	}
+	if err := tx.Commit(c.Context()); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "id": announcementID})
+}
+
+func (s *Server) handleAdminCreateAnnouncement(c *fiber.Ctx) error {
+	return s.saveAnnouncement(c, nil)
+}
+
+func (s *Server) handleAdminUpdateAnnouncement(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	return s.saveAnnouncement(c, &id)
+}
+
+func (s *Server) handleAdminUpdateAnnouncementStatus(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
+	}
+	status := strings.TrimSpace(req.Status)
+	if status != "draft" && status != "published" && status != "archived" {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Estado inválido"})
+	}
+	userID := c.Locals("user_id").(uuid.UUID)
+	tag, err := s.repos.DB().Exec(c.Context(), `
+		UPDATE platform_announcements
+		SET status = $2, updated_by = $3, updated_at = NOW()
+		WHERE id = $1
+	`, id, status, userID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if tag.RowsAffected() == 0 {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Aviso no encontrado"})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+func (s *Server) handleAdminDeleteAnnouncement(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	tag, err := s.repos.DB().Exec(c.Context(), `DELETE FROM platform_announcements WHERE id = $1`, id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if tag.RowsAffected() == 0 {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Aviso no encontrado"})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+func (s *Server) handleGetActiveAnnouncements(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(uuid.UUID)
+	accountID := c.Locals("account_id").(uuid.UUID)
+	rows, err := s.repos.DB().Query(c.Context(), `
+		SELECT pa.id, pa.title, pa.body, pa.type, pa.image_url, pa.cta_label, pa.cta_url, pa.starts_at, pa.ends_at, pa.created_at
+		FROM platform_announcements pa
+		WHERE pa.status = 'published'
+		  AND (pa.starts_at IS NULL OR pa.starts_at <= NOW())
+		  AND (pa.ends_at IS NULL OR pa.ends_at >= NOW())
+		  AND NOT EXISTS (
+		    SELECT 1 FROM platform_announcement_reads par
+		    WHERE par.announcement_id = pa.id AND par.user_id = $1 AND par.account_id = $2
+		  )
+		  AND (
+		    NOT EXISTS (SELECT 1 FROM platform_announcement_targets pat WHERE pat.announcement_id = pa.id)
+		    OR EXISTS (
+		      SELECT 1 FROM platform_announcement_targets pat
+		      WHERE pat.announcement_id = pa.id AND pat.account_id = $2
+		    )
+		  )
+		ORDER BY COALESCE(pa.starts_at, pa.created_at) DESC, pa.created_at DESC
+		LIMIT 5
+	`, userID, accountID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	defer rows.Close()
+	items := make([]fiber.Map, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		var title, body, kind, imageURL, ctaLabel, ctaURL string
+		var startsAt, endsAt *time.Time
+		var createdAt time.Time
+		if err := rows.Scan(&id, &title, &body, &kind, &imageURL, &ctaLabel, &ctaURL, &startsAt, &endsAt, &createdAt); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+		items = append(items, fiber.Map{
+			"id": id, "title": title, "body": body, "type": kind,
+			"image_url": imageURL, "cta_label": ctaLabel, "cta_url": ctaURL,
+			"starts_at": startsAt, "ends_at": endsAt, "created_at": createdAt,
+		})
+	}
+	return c.JSON(fiber.Map{"success": true, "announcements": items})
+}
+
+func (s *Server) handleAckAnnouncement(c *fiber.Ctx) error {
+	announcementID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	userID := c.Locals("user_id").(uuid.UUID)
+	accountID := c.Locals("account_id").(uuid.UUID)
+	_, err = s.repos.DB().Exec(c.Context(), `
+		INSERT INTO platform_announcement_reads (announcement_id, user_id, account_id)
+		SELECT $1, $2, $3
+		WHERE EXISTS (
+		  SELECT 1 FROM platform_announcements pa
+		  WHERE pa.id = $1
+		    AND (
+		      NOT EXISTS (SELECT 1 FROM platform_announcement_targets pat WHERE pat.announcement_id = pa.id)
+		      OR EXISTS (SELECT 1 FROM platform_announcement_targets pat WHERE pat.announcement_id = pa.id AND pat.account_id = $3)
+		    )
+		)
+		ON CONFLICT DO NOTHING
+	`, announcementID, userID, accountID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+func validFeedbackCategory(value string) string {
+	switch value {
+	case "problem", "improvement", "question":
+		return value
+	default:
+		return "idea"
+	}
+}
+
+func validFeedbackStatus(value string) bool {
+	switch value {
+	case "new", "reviewing", "planned", "resolved", "closed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) handleCreateFeedback(c *fiber.Ctx) error {
+	accountID := c.Locals("account_id").(uuid.UUID)
+	userID := c.Locals("user_id").(uuid.UUID)
+	var req struct {
+		Category string `json:"category"`
+		Subject  string `json:"subject"`
+		Detail   string `json:"detail"`
+		PageURL  string `json:"page_url"`
+		ImageURL string `json:"image_url"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
+	}
+	subject := trimmedLimit(req.Subject, 180)
+	detail := strings.TrimSpace(req.Detail)
+	if subject == "" || detail == "" {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Asunto y detalle son obligatorios"})
+	}
+	var id uuid.UUID
+	err := s.repos.DB().QueryRow(c.Context(), `
+		INSERT INTO feedback_suggestions (account_id, user_id, category, subject, detail, page_url, image_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id
+	`, accountID, userID, validFeedbackCategory(req.Category), subject, detail, trimmedLimit(req.PageURL, 1000), strings.TrimSpace(req.ImageURL)).Scan(&id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	s.recordSecurityEventWithRefs(c.Context(), "feedback_submitted", subject, c, &accountID, &userID, nil, map[string]interface{}{
+		"feedback_id": id.String(),
+		"category":    validFeedbackCategory(req.Category),
+	})
+	return c.Status(201).JSON(fiber.Map{"success": true, "id": id})
+}
+
+func (s *Server) handleAdminGetFeedback(c *fiber.Ctx) error {
+	status := strings.TrimSpace(c.Query("status"))
+	if status != "" && !validFeedbackStatus(status) {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Estado inválido"})
+	}
+	var accountID *uuid.UUID
+	if raw := strings.TrimSpace(c.Query("account_id")); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			return c.Status(400).JSON(fiber.Map{"success": false, "error": "Cuenta inválida"})
+		}
+		accountID = &parsed
+	}
+	rows, err := s.repos.DB().Query(c.Context(), `
+		SELECT f.id, f.account_id, f.user_id, f.category, f.subject, f.detail, f.page_url, f.image_url, f.status, f.admin_note,
+		       f.created_at, f.updated_at,
+		       COALESCE(a.account_code, ''), COALESCE(NULLIF(a.company_name, ''), a.name, ''),
+		       COALESCE(u.email, ''), COALESCE(NULLIF(u.display_name, ''), u.username, '')
+		FROM feedback_suggestions f
+		JOIN accounts a ON a.id = f.account_id
+		LEFT JOIN users u ON u.id = f.user_id
+		WHERE ($1 = '' OR f.status = $1)
+		  AND ($2::uuid IS NULL OR f.account_id = $2)
+		ORDER BY f.created_at DESC
+	`, status, accountID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	defer rows.Close()
+	items := make([]fiber.Map, 0)
+	for rows.Next() {
+		var id, accID uuid.UUID
+		var userID *uuid.UUID
+		var category, subject, detail, pageURL, imageURL, itemStatus, adminNote string
+		var createdAt, updatedAt time.Time
+		var accountCode, companyName, userEmail, userName string
+		if err := rows.Scan(&id, &accID, &userID, &category, &subject, &detail, &pageURL, &imageURL, &itemStatus, &adminNote, &createdAt, &updatedAt, &accountCode, &companyName, &userEmail, &userName); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+		items = append(items, fiber.Map{
+			"id": id, "account_id": accID, "user_id": userID,
+			"category": category, "subject": subject, "detail": detail,
+			"page_url": pageURL, "image_url": imageURL, "status": itemStatus, "admin_note": adminNote,
+			"created_at": createdAt, "updated_at": updatedAt,
+			"account_code": accountCode, "company_name": companyName,
+			"user_email": userEmail, "user_name": userName,
+		})
+	}
+	return c.JSON(fiber.Map{"success": true, "feedback": items})
+}
+
+func (s *Server) handleAdminUpdateFeedback(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	var req struct {
+		Status    string `json:"status"`
+		AdminNote string `json:"admin_note"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
+	}
+	status := strings.TrimSpace(req.Status)
+	if status != "" && !validFeedbackStatus(status) {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Estado inválido"})
+	}
+	tag, err := s.repos.DB().Exec(c.Context(), `
+		UPDATE feedback_suggestions
+		SET status = COALESCE(NULLIF($2, ''), status),
+		    admin_note = $3,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, id, status, strings.TrimSpace(req.AdminNote))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if tag.RowsAffected() == 0 {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Sugerencia no encontrada"})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 // --- Super Admin Handlers ---
 
 func (s *Server) handleAdminGetAccounts(c *fiber.Ctx) error {
@@ -11762,14 +12375,15 @@ func (s *Server) handleAdminCreateUser(c *fiber.Ctx) error {
 		IsDefault bool    `json:"is_default"`
 	}
 	var req struct {
-		AccountID   string                     `json:"account_id"`
-		Username    string                     `json:"username"`
-		Email       string                     `json:"email"`
-		Password    string                     `json:"password"`
-		DisplayName string                     `json:"display_name"`
-		Role        string                     `json:"role"`
-		RoleID      *string                    `json:"role_id"`
-		Accounts    []accountAssignmentRequest `json:"accounts"`
+		AccountID       string                     `json:"account_id"`
+		Username        string                     `json:"username"`
+		Email           string                     `json:"email"`
+		Password        string                     `json:"password"`
+		PasswordConfirm string                     `json:"password_confirm"`
+		DisplayName     string                     `json:"display_name"`
+		Role            string                     `json:"role"`
+		RoleID          *string                    `json:"role_id"`
+		Accounts        []accountAssignmentRequest `json:"accounts"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
@@ -11779,6 +12393,12 @@ func (s *Server) handleAdminCreateUser(c *fiber.Ctx) error {
 	req.Email = strings.TrimSpace(req.Email)
 	if req.Username == "" || req.Password == "" {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "username and password are required"})
+	}
+	if req.PasswordConfirm != "" && req.Password != req.PasswordConfirm {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Las contraseñas no coinciden"})
+	}
+	if err := service.ValidateStrongPassword(req.Password); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 	if req.Email == "" {
 		req.Email = fmt.Sprintf("%s@users.kiri.local", strings.ToLower(req.Username))
@@ -11982,13 +12602,20 @@ func (s *Server) handleAdminResetPassword(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Password string `json:"password"`
+		Password        string `json:"password"`
+		PasswordConfirm string `json:"password_confirm"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
 	}
 	if req.Password == "" {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Password is required"})
+	}
+	if req.PasswordConfirm != "" && req.Password != req.PasswordConfirm {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Las contraseñas no coinciden"})
+	}
+	if err := service.ValidateStrongPassword(req.Password); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
 	if err := s.services.Account.ResetPassword(c.Context(), id, req.Password); err != nil {

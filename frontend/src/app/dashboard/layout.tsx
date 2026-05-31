@@ -32,7 +32,11 @@ import {
   AlertTriangle,
   CreditCard,
   Smartphone,
-  HardDrive
+  HardDrive,
+  BellRing,
+  Lightbulb,
+  Send,
+  Upload
 } from 'lucide-react'
 
 interface User {
@@ -58,6 +62,16 @@ interface UserAccount {
   account_slug: string
   role: string
   is_default: boolean
+}
+
+interface Announcement {
+  id: string
+  title: string
+  body: string
+  type: 'info' | 'warning' | 'update'
+  image_url: string
+  cta_label: string
+  cta_url: string
 }
 
 function subscriptionLabel(status?: string) {
@@ -92,6 +106,11 @@ export default function DashboardLayout({
   const [showChangelog, setShowChangelog] = useState(false)
   const [changelogContent, setChangelogContent] = useState('')
   const [isErosOpen, setIsErosOpen] = useState(false)
+  const [announcements, setAnnouncements] = useState<Announcement[]>([])
+  const [activeAnnouncement, setActiveAnnouncement] = useState<Announcement | null>(null)
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false)
+  const [feedbackForm, setFeedbackForm] = useState({ category: 'idea', subject: '', detail: '', image_url: '' })
+  const [feedbackSending, setFeedbackSending] = useState(false)
   const clientVersion = process.env.NEXT_PUBLIC_BUILD_VERSION || 'dev'
 
   // Ctrl+I to toggle Eros
@@ -283,6 +302,72 @@ export default function DashboardLayout({
       }
     } catch (e) {
       console.error('Failed to switch account:', e)
+    }
+  }
+
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+    const loadAnnouncements = async () => {
+      try {
+        const res = await fetch('/api/announcements/active', { credentials: 'include' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!cancelled && data.success) {
+          const items = data.announcements || []
+          setAnnouncements(items)
+          setActiveAnnouncement(items[0] || null)
+        }
+      } catch { /* ignore */ }
+    }
+    loadAnnouncements()
+    return () => { cancelled = true }
+  }, [user?.id, user?.account_id])
+
+  const ackAnnouncement = async () => {
+    if (!activeAnnouncement) return
+    const currentID = activeAnnouncement.id
+    try {
+      await fetch(`/api/announcements/${currentID}/ack`, { method: 'POST', credentials: 'include' })
+    } catch { /* ignore */ }
+    setAnnouncements(prev => {
+      const next = prev.filter(item => item.id !== currentID)
+      setActiveAnnouncement(next[0] || null)
+      return next
+    })
+  }
+
+  const uploadFeedbackImage = async (file?: File | null) => {
+    if (!file) return
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch('/api/feedback/upload', { method: 'POST', body: formData, credentials: 'include' })
+    const data = await res.json()
+    if (data.success) {
+      setFeedbackForm(f => ({ ...f, image_url: data.media_url || '' }))
+    }
+  }
+
+  const sendFeedback = async () => {
+    if (!feedbackForm.subject.trim() || !feedbackForm.detail.trim()) return
+    setFeedbackSending(true)
+    try {
+      const res = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          ...feedbackForm,
+          page_url: typeof window !== 'undefined' ? window.location.href : pathname,
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setShowFeedbackModal(false)
+        setFeedbackForm({ category: 'idea', subject: '', detail: '', image_url: '' })
+      }
+    } finally {
+      setFeedbackSending(false)
     }
   }
 
@@ -721,6 +806,108 @@ export default function DashboardLayout({
                 <div className="animate-spin rounded-full h-6 w-6 border-2 border-emerald-200 border-t-emerald-600" />
               </div>
             )}
+          </div>
+        </div>
+      </div>
+    )}
+
+    {activeAnnouncement && (
+      <div className="fixed inset-0 bg-black/45 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden border border-slate-200">
+          {activeAnnouncement.image_url && (
+            <img src={activeAnnouncement.image_url} alt="" className="w-full max-h-56 object-cover" />
+          )}
+          <div className="p-6">
+            <div className="flex items-start gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                activeAnnouncement.type === 'warning' ? 'bg-amber-100 text-amber-700' : activeAnnouncement.type === 'update' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'
+              }`}>
+                <BellRing className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-slate-900">{activeAnnouncement.title}</h2>
+                <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap leading-relaxed">{activeAnnouncement.body}</p>
+              </div>
+            </div>
+            <div className="mt-6 flex flex-col sm:flex-row gap-3 justify-end">
+              {activeAnnouncement.cta_label && activeAnnouncement.cta_url && (
+                <a href={activeAnnouncement.cta_url} target="_blank" className="inline-flex items-center justify-center px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                  {activeAnnouncement.cta_label}
+                </a>
+              )}
+              <button onClick={ackAnnouncement} className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700">
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    <button
+      onClick={() => setShowFeedbackModal(true)}
+      className="fixed bottom-20 right-4 z-40 inline-flex items-center gap-2 px-3 py-2 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-semibold shadow-lg shadow-slate-200/70 hover:border-emerald-200 hover:text-emerald-700 hover:bg-emerald-50"
+    >
+      <Lightbulb className="w-4 h-4" />
+      Sugerencia
+    </button>
+
+    {showFeedbackModal && (
+      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Enviar sugerencia</h2>
+              <p className="text-sm text-slate-500 mt-0.5">Cuéntanos qué mejorar en Kiri.</p>
+            </div>
+            <button onClick={() => setShowFeedbackModal(false)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="p-6 space-y-4">
+            <select
+              value={feedbackForm.category}
+              onChange={e => setFeedbackForm(f => ({ ...f, category: e.target.value }))}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+            >
+              <option value="idea">Idea</option>
+              <option value="problem">Problema</option>
+              <option value="improvement">Mejora</option>
+              <option value="question">Pregunta</option>
+            </select>
+            <input
+              value={feedbackForm.subject}
+              onChange={e => setFeedbackForm(f => ({ ...f, subject: e.target.value }))}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              placeholder="Asunto"
+            />
+            <textarea
+              value={feedbackForm.detail}
+              onChange={e => setFeedbackForm(f => ({ ...f, detail: e.target.value }))}
+              className="w-full min-h-[130px] px-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              placeholder="Describe la sugerencia o el problema..."
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">
+                <Upload className="w-4 h-4" />
+                Adjuntar imagen
+                <input type="file" accept="image/*" className="hidden" onChange={e => uploadFeedbackImage(e.target.files?.[0])} />
+              </label>
+              {feedbackForm.image_url && <span className="text-xs text-emerald-700">Imagen adjunta lista.</span>}
+            </div>
+          </div>
+          <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-3">
+            <button onClick={() => setShowFeedbackModal(false)} className="px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100">
+              Cancelar
+            </button>
+            <button
+              onClick={sendFeedback}
+              disabled={feedbackSending || !feedbackForm.subject.trim() || !feedbackForm.detail.trim()}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {feedbackSending ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Send className="w-4 h-4" />}
+              Enviar
+            </button>
           </div>
         </div>
       </div>

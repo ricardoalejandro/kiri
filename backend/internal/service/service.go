@@ -144,7 +144,6 @@ func (s *AuthService) Login(ctx context.Context, username, password, jwtSecret s
 		s.recordLoginFailure(ctx, username)
 		return "", "", nil, nil, fmt.Errorf("invalid credentials")
 	}
-	_ = s.repos.User.MarkLoginSuccess(ctx, user.ID)
 
 	// Clear login failures on success
 	if s.cache != nil {
@@ -161,15 +160,28 @@ func (s *AuthService) Login(ctx context.Context, username, password, jwtSecret s
 	// Determine first/default account
 	activeAccountID := user.AccountID
 	activeRole := user.Role
+	activeAccountSource := user.AccountCreationSource
+	activeAccountReview := user.AccountReviewStatus
 	if len(userAccounts) > 0 {
 		for _, ua := range userAccounts {
 			if ua.IsDefault {
 				activeAccountID = ua.AccountID
 				activeRole = ua.Role
+				activeAccountSource = ua.AccountCreationSource
+				activeAccountReview = ua.AccountReviewStatus
 				break
 			}
 		}
 	}
+	if activeAccountSource == domain.AccountCreationSourcePublicWeb && activeAccountReview != domain.AccountReviewStatusApproved {
+		switch activeAccountReview {
+		case domain.AccountReviewStatusPending:
+			return "", "", nil, nil, fmt.Errorf("Tu cuenta está pendiente de aprobación")
+		default:
+			return "", "", nil, nil, fmt.Errorf("Tu cuenta no está habilitada")
+		}
+	}
+	_ = s.repos.User.MarkLoginSuccess(ctx, user.ID)
 
 	// Generate JWT with default account. Only super admins get wildcard;
 	// account admins use the permissions stored in their assigned role.
@@ -610,8 +622,8 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, curr
 		return fmt.Errorf("contraseña actual incorrecta")
 	}
 
-	if len(newPassword) < 8 {
-		return fmt.Errorf("la nueva contraseña debe tener al menos 8 caracteres")
+	if err := ValidateStrongPassword(newPassword); err != nil {
+		return err
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
@@ -675,8 +687,8 @@ func (s *AccountService) GetUsers(ctx context.Context, accountID *uuid.UUID) ([]
 }
 
 func (s *AccountService) CreateUser(ctx context.Context, user *domain.User, password string) error {
-	if len(password) < 8 {
-		return fmt.Errorf("la contraseña debe tener al menos 8 caracteres")
+	if err := ValidateStrongPassword(password); err != nil {
+		return err
 	}
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -701,8 +713,8 @@ func (s *AccountService) UpdateUser(ctx context.Context, user *domain.User) erro
 }
 
 func (s *AccountService) ResetPassword(ctx context.Context, userID uuid.UUID, password string) error {
-	if len(password) < 8 {
-		return fmt.Errorf("la contraseña debe tener al menos 8 caracteres")
+	if err := ValidateStrongPassword(password); err != nil {
+		return err
 	}
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
