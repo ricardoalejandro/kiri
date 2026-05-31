@@ -203,9 +203,11 @@ function bytesToGb(value?: number) {
 }
 
 type Tab = 'requests' | 'accounts' | 'users' | 'roles' | 'announcements' | 'feedback'
+type AccountViewFilter = 'active' | 'pending' | 'archived' | 'all'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('accounts')
+  const [accountViewFilter, setAccountViewFilter] = useState<AccountViewFilter>('active')
   const [accounts, setAccounts] = useState<Account[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
@@ -710,13 +712,31 @@ export default function AdminPage() {
     }
   }
 
-  const filteredAccounts = accounts.filter(a =>
+  const isArchivedAccount = (account: Account) =>
+    !account.is_active || account.review_status === 'rejected' || account.review_status === 'suspended'
+
+  const isActiveAccount = (account: Account) =>
+    account.is_active && account.review_status === 'approved'
+
+  const accountMatchesView = (account: Account) => {
+    if (accountViewFilter === 'active') return isActiveAccount(account)
+    if (accountViewFilter === 'pending') return account.review_status === 'pending_review'
+    if (accountViewFilter === 'archived') return isArchivedAccount(account)
+    return true
+  }
+
+  const accountSearchMatches = (a: Account) =>
     (a.account_code || '').toLowerCase().includes(search.toLowerCase()) ||
     (a.company_name || '').toLowerCase().includes(search.toLowerCase()) ||
     (a.signup_email || '').toLowerCase().includes(search.toLowerCase()) ||
     a.name.toLowerCase().includes(search.toLowerCase()) ||
     a.plan.toLowerCase().includes(search.toLowerCase())
-  )
+
+  const activeAccountsCount = accounts.filter(isActiveAccount).length
+  const pendingAccountsCount = accounts.filter(a => a.review_status === 'pending_review').length
+  const archivedAccountsCount = accounts.filter(isArchivedAccount).length
+
+  const filteredAccounts = accounts.filter(a => accountMatchesView(a) && accountSearchMatches(a))
 
   const filteredUsers = users.filter(u =>
     u.username.toLowerCase().includes(search.toLowerCase()) ||
@@ -731,7 +751,7 @@ export default function AdminPage() {
     r.description.toLowerCase().includes(search.toLowerCase())
   )
 
-  const pendingRequests = accounts.filter(a => a.creation_source === 'public_web' && a.review_status !== 'approved')
+  const pendingRequests = accounts.filter(a => a.creation_source === 'public_web' && a.review_status === 'pending_review')
   const filteredRequests = pendingRequests.filter(a =>
     (a.account_code || '').toLowerCase().includes(search.toLowerCase()) ||
     (a.company_name || '').toLowerCase().includes(search.toLowerCase()) ||
@@ -953,6 +973,46 @@ export default function AdminPage() {
     return { text: `Bajo (${value})`, cls: 'bg-emerald-100 text-emerald-700' }
   }
 
+  function normalizedRiskReasons(account: Account) {
+    const raw = account.signup_risk_reasons as unknown
+    if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+    if (typeof raw === 'string' && raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+      } catch {
+        return [raw]
+      }
+    }
+    return []
+  }
+
+  function riskReasonLabel(reason: string) {
+    const ipVelocity = reason.match(/^ip_velocity_(\d+)_24h$/)
+    if (ipVelocity) return `${ipVelocity[1]} registros desde la misma IP hasheada en 24h`
+    const fingerprintVelocity = reason.match(/^fingerprint_velocity_(\d+)_24h$/)
+    if (fingerprintVelocity) return `${fingerprintVelocity[1]} registros desde el mismo fingerprint básico en 24h`
+    if (reason === 'high_entropy_email_local_part') return 'Correo con patrón sospechoso o automatizado'
+    return reason.replaceAll('_', ' ')
+  }
+
+  function riskSummary(account: Account) {
+    const risk = riskLabel(account.signup_risk_score)
+    const reasons = normalizedRiskReasons(account).map(riskReasonLabel)
+    return reasons.length > 0 ? `${risk.text}: ${reasons.join('; ')}` : `${risk.text}: sin señales detectadas`
+  }
+
+  function isLegacySignupAccount(account: Account) {
+    return account.creation_source === 'public_web' && !account.signup_request_id
+  }
+
+  const accountViewFilters: { key: AccountViewFilter; label: string; count: number }[] = [
+    { key: 'active', label: 'Activas', count: activeAccountsCount },
+    { key: 'pending', label: 'En revisión', count: pendingAccountsCount },
+    { key: 'archived', label: 'Archivadas', count: archivedAccountsCount },
+    { key: 'all', label: 'Todas', count: accounts.length },
+  ]
+
   const fallbackPlans: Plan[] = [
     { code: 'basic', name: 'Basic', description: '', trial_days: 0, is_public: true, sort_order: 20 },
     { code: 'pro', name: 'Pro', description: '', trial_days: 14, is_public: true, sort_order: 40 },
@@ -1059,7 +1119,7 @@ export default function AdminPage() {
           }`}
         >
           <Building2 className="w-4 h-4" /> Cuentas
-          <span className="ml-1 bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 text-xs">{accounts.length}</span>
+          <span className="ml-1 bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 text-xs">{activeAccountsCount}</span>
         </button>
         <button
           onClick={() => { setTab('users'); setSearch('') }}
@@ -1157,6 +1217,30 @@ export default function AdminPage() {
           </>
         )}
 
+        {tab === 'accounts' && (
+          <div className="flex flex-wrap items-center gap-1 rounded-lg bg-gray-100 p-1">
+            {accountViewFilters.map(filter => (
+              <button
+                key={filter.key}
+                type="button"
+                onClick={() => setAccountViewFilter(filter.key)}
+                className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  accountViewFilter === filter.key
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {filter.label}
+                <span className={`rounded-full px-1.5 py-0.5 text-[11px] ${
+                  accountViewFilter === filter.key ? 'bg-gray-100 text-gray-600' : 'bg-gray-200 text-gray-500'
+                }`}>
+                  {filter.count}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {tab === 'accounts' || tab === 'users' ? (
           <button
             onClick={tab === 'accounts' ? openCreateAccount : openCreateUser}
@@ -1200,50 +1284,58 @@ export default function AdminPage() {
             <tbody className="divide-y divide-gray-100">
               {filteredRequests.length === 0 ? (
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No hay solicitudes pendientes.</td></tr>
-              ) : filteredRequests.map(a => (
-                <tr key={a.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-gray-900">{a.account_code || a.name}</div>
-                    <div className="text-sm text-gray-700">{a.company_name || a.name}</div>
-                    <span className="inline-flex mt-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">Web</span>
-                  </td>
-                  <td className="px-4 py-3 text-gray-700">{a.signup_contact_name || 'Sin contacto'}</td>
-                  <td className="px-4 py-3">
-                    <div className="text-gray-700">{a.signup_email || 'Sin correo'}</div>
-                    <div className="text-xs text-gray-400">{a.signup_email_domain || ''}</div>
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">
-                    {a.signup_created_at ? new Date(a.signup_created_at).toLocaleString() : new Date(a.created_at).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3">
-                    {(() => {
-                      const risk = riskLabel(a.signup_risk_score)
-                      return <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${risk.cls}`}>{risk.text}</span>
-                    })()}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${reviewColors[a.review_status] || 'bg-gray-100 text-gray-700'}`}>
-                      {reviewLabels[a.review_status] || a.review_status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => reviewAccount(a, 'approved')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Aprobar
-                      </button>
-                      <button onClick={() => reviewAccount(a, 'rejected')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-200 text-red-700 text-xs font-semibold hover:bg-red-50">
-                        <XCircle className="w-3.5 h-3.5" /> Rechazar
-                      </button>
-                      <button onClick={() => reviewAccount(a, 'suspended')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-700 text-xs font-semibold hover:bg-rose-50">
-                        <Ban className="w-3.5 h-3.5" /> Suspender
-                      </button>
-                      <button onClick={() => openAccountDetail(a)} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded" title="Ver detalle">
-                        <Eye className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              ) : filteredRequests.map(a => {
+                const legacySignup = isLegacySignupAccount(a)
+                return (
+                  <tr key={a.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3">
+                      <div className="font-semibold text-gray-900">{a.account_code || a.name}</div>
+                      <div className="text-sm text-gray-700">{a.company_name || a.name}</div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">Web</span>
+                        {legacySignup && (
+                          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700">Registro antiguo sin detalle</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">{a.signup_contact_name || (legacySignup ? 'Registro antiguo sin detalle' : 'Sin contacto')}</td>
+                    <td className="px-4 py-3">
+                      <div className="text-gray-700">{a.signup_email || (legacySignup ? 'Registro antiguo sin detalle' : 'Sin correo')}</div>
+                      <div className="text-xs text-gray-400">{a.signup_email_domain || ''}</div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">
+                      {a.signup_created_at ? new Date(a.signup_created_at).toLocaleString() : new Date(a.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const risk = riskLabel(a.signup_risk_score)
+                        return <span title={riskSummary(a)} className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${risk.cls}`}>{risk.text}</span>
+                      })()}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${reviewColors[a.review_status] || 'bg-gray-100 text-gray-700'}`}>
+                        {reviewLabels[a.review_status] || a.review_status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => reviewAccount(a, 'approved')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Aprobar
+                        </button>
+                        <button onClick={() => reviewAccount(a, 'rejected')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-200 text-red-700 text-xs font-semibold hover:bg-red-50">
+                          <XCircle className="w-3.5 h-3.5" /> Rechazar
+                        </button>
+                        <button onClick={() => reviewAccount(a, 'suspended')} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-700 text-xs font-semibold hover:bg-rose-50">
+                          <Ban className="w-3.5 h-3.5" /> Suspender
+                        </button>
+                        <button onClick={() => openAccountDetail(a)} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded" title="Ver detalle">
+                          <Eye className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         ) : tab === 'accounts' ? (
@@ -1286,7 +1378,7 @@ export default function AdminPage() {
                   <td className="px-4 py-3">
                     {(() => {
                       const risk = riskLabel(a.signup_risk_score)
-                      return <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${risk.cls}`}>{risk.text}</span>
+                      return <span title={riskSummary(a)} className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${risk.cls}`}>{risk.text}</span>
                     })()}
                   </td>
                   <td className="px-4 py-3">
@@ -1837,7 +1929,45 @@ export default function AdminPage() {
               </section>
 
               <section>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Señales de riesgo</h3>
+                {(() => {
+                  const risk = riskLabel(detailAccount.signup_risk_score)
+                  const reasons = normalizedRiskReasons(detailAccount).map(riskReasonLabel)
+                  return (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${risk.cls}`}>{risk.text}</span>
+                        <span className="text-xs text-gray-500">Score {detailAccount.signup_risk_score || 0} de 100</span>
+                      </div>
+                      {reasons.length > 0 ? (
+                        <ul className="mt-3 space-y-1 text-sm text-gray-700">
+                          {reasons.map(reason => (
+                            <li key={reason} className="flex gap-2">
+                              <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0" />
+                              <span>{reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-3 text-sm text-gray-500">Sin señales detectadas.</p>
+                      )}
+                      <div className="mt-3 grid sm:grid-cols-3 gap-2 text-xs text-gray-500">
+                        <div>IP {shortHash(detailAccount.signup_ip_hash)}</div>
+                        <div>Fingerprint {shortHash(detailAccount.signup_fingerprint_hash)}</div>
+                        <div>Turnstile {detailAccount.signup_turnstile_success ? 'Validado' : 'Sin dato'}</div>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </section>
+
+              <section>
                 <h3 className="text-sm font-semibold text-gray-900 mb-3">Procedencia del registro</h3>
+                {isLegacySignupAccount(detailAccount) && (
+                  <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                    Registro antiguo sin detalle de solicitud asociado.
+                  </div>
+                )}
                 <div className="grid sm:grid-cols-2 gap-3 text-sm">
                   <InfoTile label="Contacto" value={detailAccount.signup_contact_name || 'No registrado'} />
                   <InfoTile label="Email" value={detailAccount.signup_email || 'No registrado'} />
