@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { User, Building, Bell, Shield, LogOut, Save, Loader2, Volume2, VolumeX, BellRing, BellOff, Eye, EyeOff, Play, Zap, Plus, Pencil, Trash2, X, Link2, RefreshCw, CheckCircle2, XCircle, Power, Activity, Inbox, Paperclip, Image, Video, File, ChevronDown, ChevronRight, GripVertical, Smartphone, Wifi, WifiOff, Signal, QrCode, Edit, Key, Copy, ExternalLink, Settings, ArrowLeft, Users, Globe, Hash, Calendar, ToggleLeft, Mail, Phone, Link, DollarSign, Type, Tag, List, AlertCircle, HardDrive } from 'lucide-react'
 import { clearAuthState, subscribeWebSocket } from '@/lib/api'
 import WhatsAppAPISettingsPanel from '@/components/WhatsAppAPISettingsPanel'
+import PasswordStrengthChecklist, { getPasswordIssues } from '@/components/PasswordStrengthChecklist'
 import { CustomFieldDefinition, CustomFieldType, CustomFieldOption, CustomFieldConfig } from '@/types/custom-field'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -1477,8 +1478,9 @@ export default function SettingsPage() {
       showMessage('error', 'Las contraseñas no coinciden')
       return
     }
-    if (formData.newPassword.length < 8) {
-      showMessage('error', 'La contraseña debe tener al menos 8 caracteres')
+    const issues = getPasswordIssues(formData.newPassword)
+    if (issues.length > 0) {
+      showMessage('error', `La contraseña debe incluir: ${issues.join(', ')}`)
       return
     }
     setSaving(true)
@@ -3186,6 +3188,7 @@ export default function SettingsPage() {
                       value={formData.newPassword}
                       onChange={(e) => setFormData({ ...formData, newPassword: e.target.value })}
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-sm text-slate-900 placeholder:text-slate-400"
+                      placeholder="Mínimo 10, Aa1!"
                     />
                   </div>
                   <div>
@@ -3197,9 +3200,10 @@ export default function SettingsPage() {
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-sm text-slate-900 placeholder:text-slate-400"
                     />
                   </div>
+                  <PasswordStrengthChecklist password={formData.newPassword} confirmPassword={formData.confirmPassword} compact />
                   <button
                     onClick={handleChangePassword}
-                    disabled={saving || !formData.currentPassword || !formData.newPassword}
+                    disabled={saving || !formData.currentPassword || !formData.newPassword || !formData.confirmPassword || getPasswordIssues(formData.newPassword, formData.confirmPassword).length > 0}
                     className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-xl hover:bg-emerald-700 disabled:opacity-50 text-sm font-medium shadow-sm"
                   >
                     {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}

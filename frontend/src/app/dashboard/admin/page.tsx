@@ -7,6 +7,7 @@ import {
   HardDrive, Database, AlertTriangle, Eye, CheckCircle2, XCircle, Ban, Clock,
   Bell, MessageSquareText, Inbox, Upload, ExternalLink
 } from 'lucide-react'
+import PasswordStrengthChecklist, { getPasswordIssues } from '@/components/PasswordStrengthChecklist'
 
 interface Account {
   id: string
@@ -353,16 +354,6 @@ export default function AdminPage() {
     fetchFeedback()
   }, [feedbackStatusFilter, feedbackAccountFilter])
 
-  function passwordIssues(password: string) {
-    const issues: string[] = []
-    if (password.length < 10) issues.push('10 caracteres')
-    if (!/[A-Z]/.test(password)) issues.push('mayúscula')
-    if (!/[a-z]/.test(password)) issues.push('minúscula')
-    if (!/\d/.test(password)) issues.push('número')
-    if (!/[^A-Za-z0-9]/.test(password)) issues.push('símbolo')
-    return issues
-  }
-
   function generatedPassword() {
     const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
     const lower = 'abcdefghijkmnopqrstuvwxyz'
@@ -373,10 +364,6 @@ export default function AdminPage() {
     const chars = [pick(upper), pick(lower), pick(digits), pick(symbols)]
     for (let i = chars.length; i < 16; i++) chars.push(pick(all))
     return chars.sort(() => Math.random() - 0.5).join('')
-  }
-
-  function isStrongPassword(password: string) {
-    return passwordIssues(password).length === 0
   }
 
   // Close modals on Escape (topmost first)
@@ -607,7 +594,7 @@ export default function AdminPage() {
         alert('Las contraseñas no coinciden')
         return
       }
-      const issues = passwordIssues(userForm.password)
+      const issues = getPasswordIssues(userForm.password)
       if (issues.length > 0) {
         alert(`La contraseña debe incluir: ${issues.join(', ')}`)
         return
@@ -651,7 +638,7 @@ export default function AdminPage() {
       alert('Las contraseñas no coinciden')
       return
     }
-    const issues = passwordIssues(newPassword)
+    const issues = getPasswordIssues(newPassword)
     if (issues.length > 0) {
       alert(`La contraseña debe incluir: ${issues.join(', ')}`)
       return
@@ -2302,9 +2289,9 @@ export default function AdminPage() {
                       placeholder="Repite la contraseña"
                     />
                   </div>
-                  <p className={`mt-2 text-xs ${isStrongPassword(userForm.password) ? 'text-emerald-700' : 'text-gray-500'}`}>
-                    {isStrongPassword(userForm.password) ? 'Contraseña fuerte.' : `Debe incluir: ${passwordIssues(userForm.password).join(', ') || 'contraseña'}.`}
-                  </p>
+                  <div className="mt-3">
+                    <PasswordStrengthChecklist password={userForm.password} confirmPassword={userPasswordConfirm} compact />
+                  </div>
                 </div>
               )}
               {editingUser && <div>
@@ -2324,7 +2311,11 @@ export default function AdminPage() {
               <button onClick={() => setShowUserModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
                 Cancelar
               </button>
-              <button onClick={saveUser} className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700">
+              <button
+                onClick={saveUser}
+                disabled={!editingUser && getPasswordIssues(userForm.password, userPasswordConfirm).length > 0}
+                className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 {editingUser ? 'Guardar' : 'Crear'}
               </button>
             </div>
@@ -2377,15 +2368,17 @@ export default function AdminPage() {
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
                 placeholder="Repite la contraseña"
               />
-              <p className={`text-xs ${isStrongPassword(newPassword) ? 'text-emerald-700' : 'text-gray-500'}`}>
-                {isStrongPassword(newPassword) ? 'Contraseña fuerte.' : `Debe incluir: ${passwordIssues(newPassword).join(', ') || 'contraseña'}.`}
-              </p>
+              <PasswordStrengthChecklist password={newPassword} confirmPassword={newPasswordConfirm} compact />
             </div>
             <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
               <button onClick={() => setShowPasswordModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
                 Cancelar
               </button>
-              <button onClick={resetPassword} className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700">
+              <button
+                onClick={resetPassword}
+                disabled={getPasswordIssues(newPassword, newPasswordConfirm).length > 0}
+                className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 Cambiar
               </button>
             </div>

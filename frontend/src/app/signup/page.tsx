@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { ArrowRight, ArrowLeft, Check, Eye, EyeOff, Lock, MessageSquare, Sparkles } from 'lucide-react'
 import { markAuthSession } from '@/lib/api'
 import PublicPageScroll from '@/components/PublicPageScroll'
+import PasswordStrengthChecklist, { getPasswordIssues } from '@/components/PasswordStrengthChecklist'
 
 const fallbackTurnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || ''
 
@@ -110,7 +111,7 @@ export default function SignupPage() {
       setError('Las contraseñas no coinciden.')
       return
     }
-    const issues = passwordIssues(form.password)
+    const issues = getPasswordIssues(form.password)
     if (issues.length > 0) {
       setError(`Usa una contraseña fuerte: ${issues.join(', ')}.`)
       return
@@ -162,16 +163,6 @@ export default function SignupPage() {
     }
   }
 
-  function passwordIssues(password: string) {
-    const issues: string[] = []
-    if (password.length < 10) issues.push('10 caracteres')
-    if (!/[A-Z]/.test(password)) issues.push('mayúscula')
-    if (!/[a-z]/.test(password)) issues.push('minúscula')
-    if (!/\d/.test(password)) issues.push('número')
-    if (!/[^A-Za-z0-9]/.test(password)) issues.push('símbolo')
-    return issues
-  }
-
   function generatePassword() {
     const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
     const lower = 'abcdefghijkmnopqrstuvwxyz'
@@ -189,8 +180,6 @@ export default function SignupPage() {
     setForm(f => ({ ...f, password, password_confirm: password }))
     setShowPassword(true)
   }
-
-  const passwordStrong = passwordIssues(form.password).length === 0
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -336,9 +325,9 @@ export default function SignupPage() {
                     required
                     disabled={loading}
                   />
-                  <p className={`mt-1.5 text-[11px] leading-snug ${passwordStrong ? 'text-emerald-700' : 'text-slate-400'}`}>
-                    {passwordStrong ? 'Contraseña fuerte.' : `Incluye ${passwordIssues(form.password).join(', ') || 'una contraseña segura'}.`}
-                  </p>
+                  <div className="mt-3">
+                    <PasswordStrengthChecklist password={form.password} confirmPassword={form.password_confirm} />
+                  </div>
                 </div>
 
                 <div className="min-h-[70px] flex items-center justify-center pt-1">
@@ -354,7 +343,7 @@ export default function SignupPage() {
                 <button
                   type="submit"
                   className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
-                  disabled={loading || !signupEnabled || !turnstileSiteKey}
+                  disabled={loading || !signupEnabled || !turnstileSiteKey || getPasswordIssues(form.password, form.password_confirm).length > 0}
                 >
                   {loading ? (
                     <div className="animate-spin rounded-full h-5 w-5 border-2 border-white/30 border-t-white" />
