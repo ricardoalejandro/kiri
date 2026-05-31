@@ -9,17 +9,62 @@ const SESSION_MARKER = 'cookie-session'
 
 let _refreshPromise: Promise<boolean> | null = null
 
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000 // 30 minutes
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000
+const ACTIVITY_THROTTLE_MS = 15 * 1000
+const LAST_ACTIVITY_KEY = 'kiri:last_activity_at'
+const LOGOUT_EVENT_KEY = 'kiri:logout_at'
+
 export function clearAuthState() {
   if (typeof window === 'undefined') return
   localStorage.removeItem('token')
+  localStorage.removeItem(LAST_ACTIVITY_KEY)
+}
+
+export function markAuthActivity(force = false) {
+  if (typeof window === 'undefined') return
+  if (!localStorage.getItem('token')) return
+  const now = Date.now()
+  const previous = Number(localStorage.getItem(LAST_ACTIVITY_KEY) || '0')
+  if (!force && previous && now - previous < ACTIVITY_THROTTLE_MS) return
+  localStorage.setItem(LAST_ACTIVITY_KEY, String(now))
 }
 
 export function markAuthSession() {
   if (typeof window === 'undefined') return
   localStorage.setItem('token', SESSION_MARKER)
+  markAuthActivity(true)
+}
+
+export function isAuthIdleExpired() {
+  if (typeof window === 'undefined') return false
+  const lastActivity = Number(localStorage.getItem(LAST_ACTIVITY_KEY) || '0')
+  return lastActivity > 0 && Date.now() - lastActivity >= IDLE_TIMEOUT_MS
+}
+
+export async function logoutFromBrowser(reason: 'manual' | 'idle' | 'expired' = 'manual') {
+  if (typeof window === 'undefined') return
+  const token = localStorage.getItem('token')
+  clearIdleTimeout()
+  try {
+    await fetch(`${API_BASE}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+  } catch {
+    // Local state is still cleared even when the network is unavailable.
+  }
+  clearAuthState()
+  localStorage.setItem(LOGOUT_EVENT_KEY, `${Date.now()}:${reason}`)
+  window.location.href = '/login'
 }
 
 export async function tryRefreshToken(): Promise<boolean> {
+  if (isAuthIdleExpired()) {
+    await logoutFromBrowser('idle')
+    return false
+  }
   // Deduplicate concurrent refresh attempts
   if (_refreshPromise) return _refreshPromise
 
@@ -53,26 +98,77 @@ export async function tryRefreshToken(): Promise<boolean> {
 // ─── Idle Timeout ─────────────────────────────────────────────────────────────
 // After 30 minutes of inactivity (no mouse, keyboard, touch), auto-logout
 
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000 // 30 minutes
 let _idleTimer: ReturnType<typeof setTimeout> | null = null
+let _heartbeatTimer: ReturnType<typeof setInterval> | null = null
 let _idleInitialized = false
+let _storageListener: ((event: StorageEvent) => void) | null = null
+const _activityEvents = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll', 'visibilitychange']
 
-function resetIdleTimer() {
+function getRemainingIdleMs() {
+  const lastActivity = Number(localStorage.getItem(LAST_ACTIVITY_KEY) || '0')
+  if (!lastActivity) return IDLE_TIMEOUT_MS
+  return Math.max(0, IDLE_TIMEOUT_MS - (Date.now() - lastActivity))
+}
+
+function scheduleIdleCheck() {
   if (_idleTimer) clearTimeout(_idleTimer)
+  const remaining = getRemainingIdleMs()
   _idleTimer = setTimeout(() => {
-    // Auto-logout
-    clearAuthState()
-    window.location.href = '/login'
-  }, IDLE_TIMEOUT_MS)
+    if (isAuthIdleExpired()) {
+      void logoutFromBrowser('idle')
+      return
+    }
+    scheduleIdleCheck()
+  }, Math.max(remaining, 1000))
+}
+
+function handleUserActivity() {
+  markAuthActivity()
+  scheduleIdleCheck()
+}
+
+async function sendActivityHeartbeat() {
+  if (typeof window === 'undefined') return
+  if (!localStorage.getItem('token')) return
+  if (isAuthIdleExpired()) {
+    await logoutFromBrowser('idle')
+    return
+  }
+  const token = localStorage.getItem('token')
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/activity`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (res.status === 401) {
+      const refreshed = await tryRefreshToken()
+      if (!refreshed) await logoutFromBrowser('expired')
+    }
+  } catch {
+    // Avoid logging out on transient network hiccups; the next API call validates.
+  }
 }
 
 export function initIdleTimeout() {
   if (typeof window === 'undefined' || _idleInitialized) return
   _idleInitialized = true
+  if (!localStorage.getItem(LAST_ACTIVITY_KEY)) markAuthActivity(true)
 
-  const events = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll']
-  events.forEach(evt => window.addEventListener(evt, resetIdleTimer, { passive: true }))
-  resetIdleTimer()
+  _activityEvents.forEach(evt => window.addEventListener(evt, handleUserActivity, { passive: true }))
+  _storageListener = (event: StorageEvent) => {
+    if (event.key === LOGOUT_EVENT_KEY) {
+      clearAuthState()
+      window.location.href = '/login'
+      return
+    }
+    if (event.key === LAST_ACTIVITY_KEY) scheduleIdleCheck()
+  }
+  window.addEventListener('storage', _storageListener)
+  scheduleIdleCheck()
+  _heartbeatTimer = setInterval(() => {
+    void sendActivityHeartbeat()
+  }, HEARTBEAT_INTERVAL_MS)
 }
 
 export function clearIdleTimeout() {
@@ -80,6 +176,15 @@ export function clearIdleTimeout() {
     clearTimeout(_idleTimer)
     _idleTimer = null
   }
+  if (_heartbeatTimer) {
+    clearInterval(_heartbeatTimer)
+    _heartbeatTimer = null
+  }
+  if (typeof window !== 'undefined') {
+    _activityEvents.forEach(evt => window.removeEventListener(evt, handleUserActivity))
+    if (_storageListener) window.removeEventListener('storage', _storageListener)
+  }
+  _storageListener = null
   _idleInitialized = false
 }
 
@@ -116,6 +221,11 @@ export async function api<T>(
   options: FetchOptions = {}
 ): Promise<{ success: boolean; data?: T; error?: string }> {
   const { skipAuth = false, ...fetchOptions } = options
+
+  if (!skipAuth && isAuthIdleExpired()) {
+    await logoutFromBrowser('idle')
+    return { success: false, error: 'Sesión expirada por inactividad' }
+  }
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
@@ -156,19 +266,21 @@ export async function api<T>(
             headers,
             credentials: fetchOptions.credentials ?? 'include',
           })
+          checkVersionHeader(retryRes)
           if (retryRes.ok) {
             const retryData = await retryRes.json().catch(() => undefined)
+            markAuthActivity()
             return { success: true, data: retryData as T }
           }
         }
         // Refresh failed — session truly expired
-        clearAuthState()
-        window.location.href = '/login'
+        await logoutFromBrowser('expired')
         return { success: false, error: 'Sesión expirada' }
       }
       return { success: false, error: data?.error || `Error ${res.status}` }
     }
 
+    if (!skipAuth) markAuthActivity()
     return { success: true, data: data as T }
   } catch (err) {
     console.error('API Error:', err)
@@ -195,6 +307,11 @@ export const apiDelete = <T>(endpoint: string) =>
   api<T>(endpoint, { method: 'DELETE' })
 
 export async function apiUpload<T = any>(endpoint: string, formData: FormData): Promise<{ success: boolean; data?: T; error?: string }> {
+  if (isAuthIdleExpired()) {
+    await logoutFromBrowser('idle')
+    return { success: false, error: 'Sesión expirada por inactividad' }
+  }
+
   const doFetch = async () => {
     return fetch(`${API_BASE}${endpoint}`, {
       method: 'POST',
@@ -210,13 +327,13 @@ export async function apiUpload<T = any>(endpoint: string, formData: FormData): 
       if (refreshed) {
         res = await doFetch()
       } else {
-        clearAuthState()
-        window.location.href = '/login'
+        await logoutFromBrowser('expired')
         return { success: false, error: 'Sesión expirada' }
       }
     }
     const data = await res.json().catch(() => undefined)
     if (!res.ok) return { success: false, error: (data as any)?.error || `Error ${res.status}` }
+    markAuthActivity()
     return { success: true, data: data as T }
   } catch (err) {
     console.error('Upload Error:', err)

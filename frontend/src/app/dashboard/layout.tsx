@@ -6,7 +6,7 @@ import Link from 'next/link'
 import NotificationProvider from '@/components/NotificationProvider'
 import ErosAssistant from '@/components/ErosAssistant'
 import TaskBadge from '@/components/TaskBadge'
-import { subscribeWebSocket, onServerVersionChange, initIdleTimeout, clearIdleTimeout, tryRefreshToken, clearAuthState, markAuthSession } from '@/lib/api'
+import { subscribeWebSocket, onServerVersionChange, initIdleTimeout, clearIdleTimeout, tryRefreshToken, clearAuthState, markAuthActivity, isAuthIdleExpired, logoutFromBrowser } from '@/lib/api'
 import {
   MessageSquare,
   Settings,
@@ -131,6 +131,10 @@ export default function DashboardLayout({
     const checkAuth = async () => {
       try {
         const token = localStorage.getItem('token')
+        if (token && isAuthIdleExpired()) {
+          await logoutFromBrowser('idle')
+          return
+        }
         if (!token) {
           // Try refresh — maybe the JWT expired but refresh token cookie is valid
           const refreshed = await tryRefreshToken()
@@ -259,13 +263,7 @@ export default function DashboardLayout({
   }
 
   const handleLogout = async () => {
-    clearIdleTimeout()
-    clearAuthState()
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      credentials: 'include',
-    })
-    router.push('/login')
+    await logoutFromBrowser('manual')
   }
 
   const handleSwitchAccount = async (accountId: string) => {
@@ -278,7 +276,7 @@ export default function DashboardLayout({
       })
       const data = await res.json()
       if (data.success) {
-        markAuthSession()
+        markAuthActivity(true)
         setUser(data.user)
         setShowAccountSwitcher(false)
         window.location.href = '/dashboard'
@@ -306,6 +304,7 @@ export default function DashboardLayout({
 
   function hasPermission(href: string): boolean {
     if (!user) return false
+    if (href === '/dashboard/admin') return Boolean(user.is_super_admin || user.role === 'super_admin')
     if (href === '/dashboard/storage') return true
     if (user.is_super_admin) return true
     const module = MODULE_PERMS[href]

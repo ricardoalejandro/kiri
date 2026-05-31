@@ -383,8 +383,41 @@ func Migrate(db *pgxpool.Pool) error {
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS eros_model TEXT DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS eros_role TEXT DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS eros_instructions TEXT DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS creation_source VARCHAR(40) NOT NULL DEFAULT 'manual_admin'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`,
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`,
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS slug VARCHAR(255)`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS max_users_override INT NULL`,
+		`CREATE SEQUENCE IF NOT EXISTS account_code_seq START 1`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_code VARCHAR(32)`,
+		`UPDATE accounts
+		 SET account_code = 'KIR-' || LPAD(nextval('account_code_seq')::text, 6, '0')
+		 WHERE account_code IS NULL OR account_code = ''`,
+		`DO $$
+		 DECLARE max_code bigint;
+		 BEGIN
+		   SELECT COALESCE(MAX(substring(account_code from '^KIR-([0-9]+)$')::bigint), 0)
+		   INTO max_code
+		   FROM accounts;
+		   IF max_code > 0 THEN
+		     PERFORM setval('account_code_seq', max_code, TRUE);
+		   END IF;
+		 END $$`,
+		`ALTER TABLE accounts ALTER COLUMN account_code SET NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_account_code ON accounts(account_code)`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS company_name VARCHAR(255) NOT NULL DEFAULT ''`,
+		`UPDATE accounts SET company_name = name WHERE company_name = ''`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS creation_source VARCHAR(40) NOT NULL DEFAULT 'manual_admin'`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS review_status VARCHAR(40) NOT NULL DEFAULT 'approved'`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_request_id UUID`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_risk_score INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS signup_risk_reasons JSONB NOT NULL DEFAULT '[]'::jsonb`,
+		`UPDATE accounts a
+		 SET creation_source = 'public_web',
+		     review_status = CASE WHEN review_status = 'approved' THEN 'pending_review' ELSE review_status END
+		 FROM subscriptions s
+		 WHERE s.account_id = a.id AND s.metadata->>'source' = 'public_signup'`,
 		`UPDATE users SET is_super_admin = TRUE, role = 'super_admin' WHERE is_admin = TRUE AND account_id = (SELECT id FROM accounts ORDER BY created_at LIMIT 1) AND is_super_admin = FALSE`,
 
 		// Multi-account user assignments (user can belong to many accounts)
@@ -694,10 +727,12 @@ func Migrate(db *pgxpool.Pool) error {
 			name VARCHAR(255) UNIQUE NOT NULL,
 			description TEXT DEFAULT '',
 			is_system BOOLEAN DEFAULT FALSE,
+			is_public_signup_default BOOLEAN NOT NULL DEFAULT FALSE,
 			permissions TEXT[] DEFAULT '{}',
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
+		`ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_public_signup_default BOOLEAN NOT NULL DEFAULT FALSE`,
 
 		// Link user_accounts to a role
 		`ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS role_id UUID REFERENCES roles(id) ON DELETE SET NULL`,
@@ -713,6 +748,19 @@ func Migrate(db *pgxpool.Pool) error {
 		`INSERT INTO roles (name, description, is_system, permissions) VALUES
 			('Agente Básico', 'Acceso solo a chats y contactos', TRUE, ARRAY['chats','contacts','tags'])
 		 ON CONFLICT (name) DO NOTHING`,
+		`INSERT INTO roles (name, description, is_system, permissions, is_public_signup_default) VALUES
+			('Registro Público Free', 'Rol seguro para cuentas gratuitas creadas desde el registro público', FALSE, ARRAY['chats','contacts','leads','tags','devices','settings'], FALSE)
+		 ON CONFLICT (name) DO UPDATE SET
+			description = EXCLUDED.description,
+			permissions = EXCLUDED.permissions,
+			updated_at = NOW()`,
+		`UPDATE roles
+		 SET is_public_signup_default = TRUE, updated_at = NOW()
+		 WHERE name = 'Registro Público Free'
+		   AND NOT EXISTS (SELECT 1 FROM roles WHERE is_public_signup_default = TRUE)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_public_signup_default
+		 ON roles (is_public_signup_default)
+		 WHERE is_public_signup_default = TRUE`,
 		// Custom roles must preserve the exact permissions saved by admins.
 		`CREATE TABLE IF NOT EXISTS migration_flags (
 			key TEXT PRIMARY KEY,
@@ -1687,17 +1735,68 @@ func Migrate(db *pgxpool.Pool) error {
 			UNIQUE(account_id),
 			CHECK (status IN ('trialing', 'active', 'past_due', 'grace', 'suspended', 'canceled', 'incomplete'))
 		)`,
+		`CREATE TABLE IF NOT EXISTS security_events (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			type VARCHAR(80) NOT NULL,
+			account_id UUID REFERENCES accounts(id) ON DELETE SET NULL,
+			user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+			signup_request_id UUID,
+			subject_hash VARCHAR(64) NOT NULL DEFAULT '',
+			ip_hash VARCHAR(64) NOT NULL DEFAULT '',
+			user_agent_hash VARCHAR(64) NOT NULL DEFAULT '',
+			metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS account_signup_requests (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			account_id UUID REFERENCES accounts(id) ON DELETE SET NULL,
+			user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+			email VARCHAR(255) NOT NULL DEFAULT '',
+			email_domain VARCHAR(255) NOT NULL DEFAULT '',
+			company_name VARCHAR(255) NOT NULL DEFAULT '',
+			contact_name VARCHAR(255) NOT NULL DEFAULT '',
+			ip_hash VARCHAR(64) NOT NULL DEFAULT '',
+			fingerprint_hash VARCHAR(64) NOT NULL DEFAULT '',
+			user_agent_hash VARCHAR(64) NOT NULL DEFAULT '',
+			turnstile_success BOOLEAN NOT NULL DEFAULT FALSE,
+			turnstile_hostname VARCHAR(255) NOT NULL DEFAULT '',
+			turnstile_action VARCHAR(80) NOT NULL DEFAULT '',
+			referrer TEXT NOT NULL DEFAULT '',
+			utm_source VARCHAR(255) NOT NULL DEFAULT '',
+			utm_medium VARCHAR(255) NOT NULL DEFAULT '',
+			utm_campaign VARCHAR(255) NOT NULL DEFAULT '',
+			risk_score INT NOT NULL DEFAULT 0,
+			risk_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+			status VARCHAR(40) NOT NULL DEFAULT 'pending_review',
+			reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+			reviewed_at TIMESTAMPTZ,
+			metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CHECK (status IN ('pending_review', 'approved', 'rejected', 'suspended'))
+		)`,
+		`ALTER TABLE security_events ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES accounts(id) ON DELETE SET NULL`,
+		`ALTER TABLE security_events ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL`,
+		`ALTER TABLE security_events ADD COLUMN IF NOT EXISTS signup_request_id UUID`,
 		`CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_subscriptions_period_end ON subscriptions(current_period_end) WHERE current_period_end IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_signup_requests_account ON account_signup_requests(account_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_signup_requests_status_created ON account_signup_requests(status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_signup_requests_ip_created ON account_signup_requests(ip_hash, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_signup_requests_fingerprint_created ON account_signup_requests(fingerprint_hash, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_account_created ON security_events(account_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_signup_created ON security_events(signup_request_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_type_created ON security_events(type, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_events_ip_created ON security_events(ip_hash, created_at DESC)`,
 		`INSERT INTO plans (code, name, description, trial_days, is_public, sort_order)
 		VALUES
-			('free', 'Free', 'Plan gratuito interno para pruebas controladas.', 0, FALSE, 5),
-			('trial', 'Trial', 'Prueba comercial para cuentas nuevas.', 14, TRUE, 10),
-			('basic', 'Basic', 'Operación inicial con límites controlados.', 0, TRUE, 20),
-			('starter', 'Starter', 'Plan de entrada para equipos pequeños.', 14, TRUE, 30),
-			('pro', 'Pro', 'Plan para equipos en crecimiento.', 14, TRUE, 40),
-			('business', 'Business', 'Plan avanzado con más capacidad operativa.', 14, TRUE, 50),
-			('enterprise', 'Enterprise', 'Plan corporativo con límites amplios y soporte prioritario.', 0, TRUE, 60),
+			('free', 'Free', 'Plan gratuito sin limite de tiempo para pruebas controladas.', 0, TRUE, 5),
+			('trial', 'Trial', 'Prueba comercial para cuentas nuevas.', 14, FALSE, 10),
+			('basic', 'Basic', 'Operación inicial con límites controlados.', 0, FALSE, 20),
+			('starter', 'Starter', 'Plan de entrada para equipos pequeños.', 14, FALSE, 30),
+			('pro', 'Pro', 'Plan para equipos en crecimiento.', 14, FALSE, 40),
+			('business', 'Business', 'Plan avanzado con más capacidad operativa.', 14, FALSE, 50),
+			('enterprise', 'Enterprise', 'Plan corporativo con límites amplios y soporte prioritario.', 0, FALSE, 60),
 			('internal', 'Internal', 'Plan administrativo para cuentas existentes o especiales.', 0, FALSE, 70)
 		ON CONFLICT (code) DO UPDATE SET
 			name = EXCLUDED.name,
@@ -1708,7 +1807,7 @@ func Migrate(db *pgxpool.Pool) error {
 			updated_at = NOW()`,
 		`INSERT INTO plan_entitlements (plan_code, key, value_json)
 		VALUES
-			('free', 'max_users', '1'::jsonb), ('free', 'max_devices', '1'::jsonb), ('free', 'max_contacts', '500'::jsonb), ('free', 'google_contacts', 'false'::jsonb),
+			('free', 'max_users', '1'::jsonb), ('free', 'max_devices', '5'::jsonb), ('free', 'max_contacts', '500'::jsonb), ('free', 'google_contacts', 'false'::jsonb),
 			('trial', 'max_users', '3'::jsonb), ('trial', 'max_devices', '2'::jsonb), ('trial', 'max_contacts', '2000'::jsonb), ('trial', 'google_contacts', 'true'::jsonb),
 			('basic', 'max_users', '3'::jsonb), ('basic', 'max_devices', '2'::jsonb), ('basic', 'max_contacts', '5000'::jsonb), ('basic', 'google_contacts', 'true'::jsonb),
 			('starter', 'max_users', '5'::jsonb), ('starter', 'max_devices', '3'::jsonb), ('starter', 'max_contacts', '10000'::jsonb), ('starter', 'google_contacts', 'true'::jsonb),
@@ -1739,6 +1838,9 @@ func Migrate(db *pgxpool.Pool) error {
 	}
 
 	if err := removeRetiredKiriFeatures(ctx, db); err != nil {
+		return err
+	}
+	if err := hardenPublicSignupAccounts(ctx, db); err != nil {
 		return err
 	}
 
@@ -1808,6 +1910,120 @@ func removeRetiredKiriFeatures(ctx context.Context, db *pgxpool.Pool) error {
 		if _, err := db.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("retired feature cleanup failed: %w\nSQL: %s", err, stmt)
 		}
+	}
+	return nil
+}
+
+func hardenPublicSignupAccounts(ctx context.Context, db *pgxpool.Pool) error {
+	const guardedStorageLimit int64 = 100 * 1024 * 1024
+	const guardedDeviceLimit int = 5
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var demotedUsers int64
+	err = tx.QueryRow(ctx, `
+		WITH public_signup_users AS (
+			SELECT DISTINCT u.id
+			FROM users u
+			JOIN subscriptions s ON s.account_id = u.account_id
+			WHERE s.metadata->>'source' = 'public_signup'
+				AND COALESCE(u.is_super_admin, FALSE) = FALSE
+				AND (COALESCE(u.is_admin, FALSE) = TRUE OR u.role = 'admin')
+		),
+		updated AS (
+			UPDATE users u
+			SET is_admin = FALSE, role = 'agent', updated_at = NOW()
+			FROM public_signup_users psu
+			WHERE u.id = psu.id
+			RETURNING u.id
+		)
+		SELECT COUNT(*) FROM updated
+	`).Scan(&demotedUsers)
+	if err != nil {
+		return fmt.Errorf("failed to demote public signup users: %w", err)
+	}
+
+	var demotedAssignments int64
+	err = tx.QueryRow(ctx, `
+		WITH public_signup_assignments AS (
+			SELECT ua.user_id, ua.account_id
+			FROM user_accounts ua
+			JOIN users u ON u.id = ua.user_id
+			JOIN subscriptions s ON s.account_id = ua.account_id
+			WHERE s.metadata->>'source' = 'public_signup'
+				AND COALESCE(u.is_super_admin, FALSE) = FALSE
+				AND ua.role = 'admin'
+		),
+		updated AS (
+			UPDATE user_accounts ua
+			SET role = 'agent'
+			FROM public_signup_assignments psa
+			WHERE ua.user_id = psa.user_id AND ua.account_id = psa.account_id
+			RETURNING ua.user_id
+		)
+		SELECT COUNT(*) FROM updated
+	`).Scan(&demotedAssignments)
+	if err != nil {
+		return fmt.Errorf("failed to demote public signup account assignments: %w", err)
+	}
+
+	var guardedAccounts int64
+	err = tx.QueryRow(ctx, `
+		WITH updated AS (
+			UPDATE accounts a
+			SET
+				max_devices = LEAST(COALESCE(NULLIF(a.max_devices, 0), $2), $2),
+				max_users_override = LEAST(COALESCE(NULLIF(a.max_users_override, 0), 1), 1),
+				storage_limit_bytes = CASE
+					WHEN COALESCE(a.storage_limit_bytes, 0) <= 0 THEN $1
+					ELSE LEAST(a.storage_limit_bytes, $1)
+				END,
+				updated_at = NOW()
+			FROM subscriptions s
+			WHERE s.account_id = a.id
+				AND s.metadata->>'source' = 'public_signup'
+				AND (
+					COALESCE(a.max_devices, 0) <> $2
+					OR a.max_users_override IS NULL
+					OR a.max_users_override <> 1
+					OR COALESCE(a.storage_limit_bytes, 0) <= 0
+					OR a.storage_limit_bytes > $1
+				)
+			RETURNING a.id
+		)
+		SELECT COUNT(*) FROM updated
+	`, guardedStorageLimit, guardedDeviceLimit).Scan(&guardedAccounts)
+	if err != nil {
+		return fmt.Errorf("failed to harden public signup account limits: %w", err)
+	}
+
+	if demotedUsers > 0 || demotedAssignments > 0 || guardedAccounts > 0 {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO security_events (type, subject_hash, metadata)
+			VALUES (
+				'public_signup_privilege_hardening',
+				'migration',
+				jsonb_build_object(
+					'source', 'migration',
+					'demoted_users', $1::bigint,
+					'demoted_assignments', $2::bigint,
+					'guarded_accounts', $3::bigint
+				)
+			)
+		`, demotedUsers, demotedAssignments, guardedAccounts); err != nil {
+			return fmt.Errorf("failed to record public signup hardening audit event: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if demotedUsers > 0 || demotedAssignments > 0 || guardedAccounts > 0 {
+		log.Printf("[SECURITY] Hardened public signup accounts: users=%d assignments=%d accounts=%d", demotedUsers, demotedAssignments, guardedAccounts)
 	}
 	return nil
 }

@@ -1221,22 +1221,19 @@ func (p *DevicePool) handleMessage(ctx context.Context, instance *DeviceInstance
 			if contact != nil {
 				newLead.ContactID = &contact.ID
 			}
-			if activePipeline, _ := p.repos.Pipeline.GetActivePipeline(ctx, instance.AccountID); activePipeline != nil {
-				newLead.PipelineID = &activePipeline.ID
-				if len(activePipeline.Stages) > 0 {
-					// 1. Check account-configured default incoming stage
-					var configured bool
-					if acct, _ := p.repos.Account.GetByID(ctx, instance.AccountID); acct != nil && acct.DefaultIncomingStageID != nil {
-						for _, st := range activePipeline.Stages {
-							if st.ID == *acct.DefaultIncomingStageID {
-								newLead.StageID = &st.ID
-								configured = true
-								break
-							}
-						}
-					}
-					if !configured {
-						// 2. Fallback: prefer "Leads Entrantes", then first stage
+			var configured bool
+			if acct, _ := p.repos.Account.GetByID(ctx, instance.AccountID); acct != nil && acct.DefaultIncomingStageID != nil {
+				if pipeline, stage, _ := p.repos.Pipeline.GetByStageID(ctx, instance.AccountID, *acct.DefaultIncomingStageID); pipeline != nil && stage != nil {
+					newLead.PipelineID = &pipeline.ID
+					newLead.StageID = &stage.ID
+					configured = true
+				}
+			}
+			if !configured {
+				if activePipeline, _ := p.repos.Pipeline.GetActivePipeline(ctx, instance.AccountID); activePipeline != nil {
+					newLead.PipelineID = &activePipeline.ID
+					if len(activePipeline.Stages) > 0 {
+						// Fallback: prefer "Leads Entrantes", then first stage.
 						newLead.StageID = &activePipeline.Stages[0].ID
 						for _, st := range activePipeline.Stages {
 							if strings.EqualFold(st.Name, "Leads Entrantes") {

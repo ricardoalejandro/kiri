@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -78,7 +79,37 @@ func (s *Server) requirePlanFeature(featureKey string) fiber.Handler {
 }
 
 func (s *Server) enforcePlanLimit(ctx context.Context, accountID uuid.UUID, entitlementKey string, increment int) error {
+	if entitlementKey == "max_users" {
+		account, err := s.services.Account.GetByID(ctx, accountID)
+		if err == nil && account != nil && account.MaxUsersOverride != nil {
+			current := account.UserCount
+			limit := *account.MaxUsersOverride
+			if limit > 0 && current+increment > limit {
+				return fmt.Errorf("límite del plan alcanzado para %s (%d/%d)", entitlementKey, current, limit)
+			}
+			return nil
+		}
+	}
 	return s.services.Subscription.EnforceLimit(ctx, accountID, entitlementKey, increment)
+}
+
+func (s *Server) enforceSignupReviewCostlyAction(ctx context.Context, accountID uuid.UUID) error {
+	account, err := s.services.Account.GetByID(ctx, accountID)
+	if err != nil || account == nil {
+		return err
+	}
+	if account.CreationSource != domain.AccountCreationSourcePublicWeb {
+		return nil
+	}
+	switch account.ReviewStatus {
+	case domain.AccountReviewStatusRejected, domain.AccountReviewStatusSuspended:
+		return fmt.Errorf("la cuenta no está habilitada para esta acción")
+	case domain.AccountReviewStatusPending:
+		if account.SignupRiskScore >= 60 {
+			return fmt.Errorf("la cuenta está en revisión antes de habilitar acciones de mayor costo")
+		}
+	}
+	return nil
 }
 
 func subscriptionBlocked(status string, isActive bool) bool {

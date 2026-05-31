@@ -1713,6 +1713,8 @@ export default function SettingsPage() {
     )
   }
 
+  const selectedIncomingStage = pipelineStages.find(stage => stage.id === incomingStageId)
+
   const tabs = [
     { id: 'profile', label: 'Perfil', icon: User },
     { id: 'account', label: 'Cuenta', icon: Building },
@@ -1890,27 +1892,38 @@ export default function SettingsPage() {
                   <h3 className="text-sm font-medium text-slate-900">Etapa de Leads Entrantes</h3>
                 </div>
                 <p className="text-xs text-slate-500 mb-3">
-                  Los nuevos leads que lleguen por WhatsApp se asignarán automáticamente a esta etapa.
+                  Los nuevos leads que lleguen por WhatsApp se asignarán automáticamente a esta etapa y pipeline.
                 </p>
                 <div className="flex items-center gap-3">
                   <select
                     value={incomingStageId}
                     onChange={(e) => handleSaveIncomingStage(e.target.value)}
                     disabled={savingStage}
-                    className="flex-1 max-w-md px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-sm text-slate-900 bg-white disabled:opacity-50"
+                    className="flex-1 max-w-xl px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-sm text-slate-900 bg-white disabled:opacity-50"
+                    title={selectedIncomingStage ? `${selectedIncomingStage.pipeline_name} -> ${selectedIncomingStage.name}` : 'Automático'}
                   >
-                    <option value="">Automático (Leads Entrantes)</option>
-                    {pipelineStages.map((st) => (
-                      <option key={st.id} value={st.id}>
-                        {st.pipeline_name} → {st.name}
-                      </option>
+                    <option value="">Automático: "Leads Entrantes" o primera etapa</option>
+                    {managedPipelines.length > 0 ? managedPipelines.map((pipeline) => (
+                      <optgroup key={pipeline.id} label={pipeline.name}>
+                        {(pipeline.stages || []).map((stage) => (
+                          <option key={stage.id} value={stage.id}>
+                            {stage.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )) : pipelineStages.map((st) => (
+                      <option key={st.id} value={st.id}>{st.pipeline_name} {'->'} {st.name}</option>
                     ))}
                   </select>
                   {savingStage && <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />}
                 </div>
-                {incomingStageId && (
+                {selectedIncomingStage ? (
                   <p className="text-[10px] text-emerald-600 mt-1.5">
-                    ✓ Configurado: {pipelineStages.find(s => s.id === incomingStageId)?.name || 'Etapa seleccionada'}
+                    Configurado: {selectedIncomingStage.pipeline_name} {'->'} {selectedIncomingStage.name}
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-slate-400 mt-1.5">
+                    Automático usará una etapa llamada "Leads Entrantes"; si no existe, usará la primera etapa del pipeline principal.
                   </p>
                 )}
               </div>

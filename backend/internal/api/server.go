@@ -55,6 +55,7 @@ type Server struct {
 	pool         *whatsapp.DevicePool
 	storage      *storage.Storage
 	cache        *cache.Cache
+	abuseLimiter *inMemoryAbuseLimiter
 	googleClient *googleclient.Client
 	version      string
 	changelog    string
@@ -97,7 +98,7 @@ func NewServer(cfg *config.Config, services *service.Services, repos *repository
 		CrossOriginOpenerPolicy:   "same-origin",
 		CrossOriginResourcePolicy: "same-origin",
 		PermissionPolicy:          "geolocation=(), microphone=(), camera=()",
-		ContentSecurityPolicy:     "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' wss: https:; font-src 'self' data:; frame-ancestors 'none'",
+		ContentSecurityPolicy:     "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' wss: https: https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; font-src 'self' data:; frame-ancestors 'none'",
 	}))
 
 	// Rate Limiting - 500 requests per minute per IP.
@@ -150,6 +151,7 @@ func NewServer(cfg *config.Config, services *service.Services, repos *repository
 		pool:         pool,
 		storage:      store,
 		cache:        c,
+		abuseLimiter: newInMemoryAbuseLimiter(),
 		googleClient: gc,
 		version:      version,
 		changelog:    changelogContent,
@@ -189,6 +191,7 @@ func (s *Server) setupRoutes() {
 	// Version endpoint — public, returns version info and changelog
 	api.Get("/version", s.handleGetVersion)
 	api.Get("/public/plans", s.handleListPlans)
+	api.Get("/public/signup-config", s.handlePublicSignupConfig)
 
 	// Device health endpoint (protected) — detailed per-device metrics
 	// Registered after auth middleware setup below
@@ -198,6 +201,7 @@ func (s *Server) setupRoutes() {
 	auth.Post("/login", s.handleLogin)
 	auth.Post("/register", s.handleRegister)
 	auth.Post("/refresh", s.handleRefreshToken)
+	auth.Post("/logout", s.handleLogout)
 
 	// WhatsApp Cloud API webhook (public — verification token in env, device resolved by phone_number_id)
 	api.Get("/whatsapp/cloud/webhook", s.handleWhatsAppCloudVerify)
@@ -215,7 +219,7 @@ func (s *Server) setupRoutes() {
 	// User routes
 	protected.Get("/me", s.handleGetMe)
 	protected.Get("/me/accounts", s.handleGetMyAccounts)
-	protected.Post("/auth/logout", s.handleLogout)
+	protected.Post("/auth/activity", s.handleAuthActivity)
 	protected.Post("/auth/switch-account", s.handleSwitchAccount)
 
 	// Settings routes
@@ -505,9 +509,8 @@ func (s *Server) setupRoutes() {
 	protected.Get("/ai/conversations/:id", s.handleGetErosConversation)
 	protected.Delete("/ai/conversations/:id", s.handleDeleteErosConversation)
 
-	// Admin routes. Access is controlled by the explicit admin permission;
-	// super admins still pass through the wildcard permission.
-	admin := protected.Group("/admin", s.requirePermission(domain.PermAdmin))
+	// Admin routes are platform-level and reserved for Kiri super admins.
+	admin := protected.Group("/admin", s.superAdminMiddleware)
 
 	// Account management
 	admin.Get("/plans", s.handleListPlans)
@@ -519,6 +522,8 @@ func (s *Server) setupRoutes() {
 	adminAccounts.Post("/:id/extend-trial", s.handleAdminExtendTrial)
 	adminAccounts.Post("/:id/suspend-subscription", s.handleAdminSuspendSubscription)
 	adminAccounts.Post("/:id/reactivate-subscription", s.handleAdminReactivateSubscription)
+	adminAccounts.Get("/:id/events", s.handleAdminGetAccountEvents)
+	adminAccounts.Patch("/:id/review", s.handleAdminReviewAccount)
 	adminAccounts.Get("/:id", s.handleAdminGetAccount)
 	adminAccounts.Put("/:id", s.handleAdminUpdateAccount)
 	adminAccounts.Patch("/:id/toggle", s.handleAdminToggleAccount)
@@ -781,17 +786,33 @@ func (s *Server) isAllowedRequestOrigin(origin string) bool {
 
 func (s *Server) handleLogin(c *fiber.Ctx) error {
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		TurnstileToken string `json:"turnstile_token"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
 	}
+	username := strings.ToLower(strings.TrimSpace(req.Username))
+	if err := s.checkLoginAbuseLimit(c, username); err != nil {
+		return err
+	}
+	if _, err := s.validateTurnstile(c, username, req.TurnstileToken); err != nil {
+		return err
+	}
 
-	token, refreshToken, user, userAccounts, err := s.services.Auth.Login(c.Context(), req.Username, req.Password, s.cfg.JWTSecret)
+	token, refreshToken, user, userAccounts, err := s.services.Auth.Login(c.Context(), username, req.Password, s.cfg.JWTSecret)
 	if err != nil {
+		eventType := "login_failure"
+		if strings.Contains(strings.ToLower(err.Error()), "bloqueada") || strings.Contains(strings.ToLower(err.Error()), "bloqueado") {
+			eventType = "login_lockout"
+		}
+		s.recordSecurityEvent(c.Context(), eventType, username, c, map[string]interface{}{"reason": err.Error()})
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
+	s.recordSecurityEventWithRefs(c.Context(), "login_success", username, c, &user.AccountID, &user.ID, nil, map[string]interface{}{
+		"account_code": user.AccountCode,
+	})
 
 	// Set access token cookie (short-lived, 1 hour)
 	c.Cookie(&fiber.Cookie{
@@ -819,11 +840,15 @@ func (s *Server) handleLogin(c *fiber.Ctx) error {
 	accountsList := make([]fiber.Map, 0)
 	for _, ua := range userAccounts {
 		accountsList = append(accountsList, fiber.Map{
-			"account_id":   ua.AccountID,
-			"account_name": ua.AccountName,
-			"account_slug": ua.AccountSlug,
-			"role":         ua.Role,
-			"is_default":   ua.IsDefault,
+			"account_id":              ua.AccountID,
+			"account_name":            ua.AccountName,
+			"account_code":            ua.AccountCode,
+			"account_company_name":    ua.AccountCompanyName,
+			"account_slug":            ua.AccountSlug,
+			"account_creation_source": ua.AccountCreationSource,
+			"account_review_status":   ua.AccountReviewStatus,
+			"role":                    ua.Role,
+			"is_default":              ua.IsDefault,
 		})
 	}
 
@@ -856,16 +881,22 @@ func (s *Server) handleLogin(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"user": fiber.Map{
-			"id":             user.ID,
-			"username":       user.Username,
-			"email":          user.Email,
-			"display_name":   user.DisplayName,
-			"is_admin":       isAdmin,
-			"is_super_admin": user.IsSuperAdmin,
-			"role":           user.Role,
-			"account_id":     user.AccountID,
-			"account_name":   user.AccountName,
-			"permissions":    permissions,
+			"id":                      user.ID,
+			"username":                user.Username,
+			"email":                   user.Email,
+			"display_name":            user.DisplayName,
+			"is_admin":                isAdmin,
+			"is_super_admin":          user.IsSuperAdmin,
+			"role":                    user.Role,
+			"account_id":              user.AccountID,
+			"account_name":            user.AccountName,
+			"account_code":            user.AccountCode,
+			"account_company_name":    user.AccountCompanyName,
+			"account_creation_source": user.AccountCreationSource,
+			"account_review_status":   user.AccountReviewStatus,
+			"email_verified":          user.EmailVerified,
+			"last_login_at":           user.LastLoginAt,
+			"permissions":             permissions,
 		},
 		"accounts": accountsList,
 	})
@@ -898,9 +929,15 @@ func (s *Server) handleLogout(c *fiber.Ctx) error {
 	refreshToken := c.Cookies("refresh-token")
 	if claims != nil {
 		s.services.Auth.Logout(c.Context(), claims, refreshToken)
+	} else if refreshToken != "" {
+		s.services.Auth.LogoutByRefreshToken(c.Context(), refreshToken)
 	}
 
 	s.clearAuthCookies(c)
+	return c.JSON(fiber.Map{"success": true})
+}
+
+func (s *Server) handleAuthActivity(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
@@ -1341,6 +1378,9 @@ func (s *Server) handleCreateDevice(c *fiber.Ctx) error {
 	}
 
 	accountID := c.Locals("account_id").(uuid.UUID)
+	if err := s.enforceSignupReviewCostlyAction(c.Context(), accountID); err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"success": false, "error": err.Error(), "code": "account_review_required"})
+	}
 	if err := s.enforcePlanLimit(c.Context(), accountID, "max_devices", 1); err != nil {
 		return c.Status(fiber.StatusPaymentRequired).JSON(fiber.Map{"success": false, "error": err.Error(), "code": "plan_limit_reached", "limit": "max_devices"})
 	}
@@ -1414,6 +1454,9 @@ func (s *Server) handleConnectDevice(c *fiber.Ctx) error {
 	}
 	if isCloudAPIDevice(dev) {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Este canal usa WhatsApp API Oficial y no se conecta por QR"})
+	}
+	if err := s.enforceSignupReviewCostlyAction(c.Context(), accountID); err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"success": false, "error": err.Error(), "code": "account_review_required"})
 	}
 
 	if err := s.services.Device.Connect(c.Context(), deviceID); err != nil {
@@ -4742,24 +4785,23 @@ func (s *Server) handleCreateLead(c *fiber.Ctx) error {
 			}
 		}
 	} else {
-		// Assign to default pipeline first stage
+		// Assign to account-configured incoming stage, even if it belongs to a
+		// non-default pipeline. If none is configured, fall back to default.
+		var configured bool
+		if acct, _ := s.services.Account.GetByID(c.Context(), accountID); acct != nil && acct.DefaultIncomingStageID != nil {
+			if pipeline, stage, _ := s.services.Pipeline.GetByStageID(c.Context(), accountID, *acct.DefaultIncomingStageID); pipeline != nil && stage != nil {
+				lead.PipelineID = &pipeline.ID
+				lead.StageID = &stage.ID
+				configured = true
+			}
+		}
+
 		defaultPipeline, _ := s.services.Pipeline.GetDefaultPipeline(c.Context(), accountID)
 		if defaultPipeline != nil {
-			lead.PipelineID = &defaultPipeline.ID
-			if len(defaultPipeline.Stages) > 0 {
-				// 1. Check account-configured default incoming stage
-				var configured bool
-				if acct, _ := s.services.Account.GetByID(c.Context(), accountID); acct != nil && acct.DefaultIncomingStageID != nil {
-					for _, st := range defaultPipeline.Stages {
-						if st.ID == *acct.DefaultIncomingStageID {
-							lead.StageID = &st.ID
-							configured = true
-							break
-						}
-					}
-				}
-				if !configured {
-					// 2. Fallback: prefer "Leads Entrantes", then first stage
+			if !configured {
+				lead.PipelineID = &defaultPipeline.ID
+				if len(defaultPipeline.Stages) > 0 {
+					// Fallback: prefer "Leads Entrantes", then first stage.
 					lead.StageID = &defaultPipeline.Stages[0].ID
 					for _, st := range defaultPipeline.Stages {
 						if strings.EqualFold(st.Name, "Leads Entrantes") {
@@ -6072,27 +6114,22 @@ func (s *Server) handleImportCSV(c *fiber.Ctx) error {
 				}
 			}
 			// Fallback: assign to default pipeline first stage
-			if lead.PipelineID == nil && defaultPipeline != nil && defaultPipeline.Stages != nil && len(defaultPipeline.Stages) > 0 {
-				lead.PipelineID = &defaultPipeline.ID
-				// 1. Check account-configured default incoming stage
-				var configured bool
+			if lead.PipelineID == nil {
 				if acct, _ := s.services.Account.GetByID(c.Context(), accountID); acct != nil && acct.DefaultIncomingStageID != nil {
-					for _, st := range defaultPipeline.Stages {
-						if st.ID == *acct.DefaultIncomingStageID {
-							lead.StageID = &st.ID
-							configured = true
-							break
-						}
+					if pipeline, stage, _ := s.services.Pipeline.GetByStageID(c.Context(), accountID, *acct.DefaultIncomingStageID); pipeline != nil && stage != nil {
+						lead.PipelineID = &pipeline.ID
+						lead.StageID = &stage.ID
 					}
 				}
-				if !configured {
-					// 2. Fallback: prefer "Leads Entrantes", then first stage
-					lead.StageID = &defaultPipeline.Stages[0].ID
-					for _, st := range defaultPipeline.Stages {
-						if strings.EqualFold(st.Name, "Leads Entrantes") {
-							lead.StageID = &st.ID
-							break
-						}
+			}
+			if lead.PipelineID == nil && defaultPipeline != nil && defaultPipeline.Stages != nil && len(defaultPipeline.Stages) > 0 {
+				lead.PipelineID = &defaultPipeline.ID
+				// Fallback: prefer "Leads Entrantes", then first stage
+				lead.StageID = &defaultPipeline.Stages[0].ID
+				for _, st := range defaultPipeline.Stages {
+					if strings.EqualFold(st.Name, "Leads Entrantes") {
+						lead.StageID = &st.ID
+						break
 					}
 				}
 			}
@@ -11289,9 +11326,11 @@ func (s *Server) handleAdminGetAccounts(c *fiber.Ctx) error {
 func (s *Server) handleAdminCreateAccount(c *fiber.Ctx) error {
 	var req struct {
 		Name              string `json:"name"`
+		CompanyName       string `json:"company_name"`
 		Slug              string `json:"slug"`
 		Plan              string `json:"plan"`
 		MaxDevices        int    `json:"max_devices"`
+		MaxUsersOverride  *int   `json:"max_users_override"`
 		StorageLimitBytes int64  `json:"storage_limit_bytes"`
 	}
 	if err := c.BodyParser(&req); err != nil {
@@ -11306,14 +11345,25 @@ func (s *Server) handleAdminCreateAccount(c *fiber.Ctx) error {
 	if req.MaxDevices <= 0 {
 		req.MaxDevices = 5
 	}
+	if req.MaxUsersOverride != nil && *req.MaxUsersOverride < 0 {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Max users must be 0 or greater"})
+	}
+	companyName := strings.TrimSpace(req.CompanyName)
+	if companyName == "" {
+		companyName = strings.TrimSpace(req.Name)
+	}
 
 	account := &domain.Account{
-		Name:              req.Name,
+		Name:              strings.TrimSpace(req.Name),
+		CompanyName:       companyName,
 		Slug:              req.Slug,
 		Plan:              req.Plan,
 		MaxDevices:        req.MaxDevices,
+		MaxUsersOverride:  req.MaxUsersOverride,
 		StorageLimitBytes: req.StorageLimitBytes,
 		IsActive:          true,
+		CreationSource:    domain.AccountCreationSourceManualAdmin,
+		ReviewStatus:      domain.AccountReviewStatusApproved,
 	}
 
 	if err := s.services.Account.Create(c.Context(), account); err != nil {
@@ -11351,9 +11401,11 @@ func (s *Server) handleAdminUpdateAccount(c *fiber.Ctx) error {
 
 	var req struct {
 		Name              string `json:"name"`
+		CompanyName       string `json:"company_name"`
 		Slug              string `json:"slug"`
 		Plan              string `json:"plan"`
 		MaxDevices        int    `json:"max_devices"`
+		MaxUsersOverride  *int   `json:"max_users_override"`
 		StorageLimitBytes int64  `json:"storage_limit_bytes"`
 	}
 	if err := c.BodyParser(&req); err != nil {
@@ -11369,13 +11421,22 @@ func (s *Server) handleAdminUpdateAccount(c *fiber.Ctx) error {
 		}
 		req.Plan = existing.Plan
 	}
+	if req.MaxUsersOverride != nil && *req.MaxUsersOverride < 0 {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Max users must be 0 or greater"})
+	}
+	companyName := strings.TrimSpace(req.CompanyName)
+	if companyName == "" {
+		companyName = strings.TrimSpace(req.Name)
+	}
 
 	account := &domain.Account{
 		ID:                id,
-		Name:              req.Name,
+		Name:              strings.TrimSpace(req.Name),
+		CompanyName:       companyName,
 		Slug:              req.Slug,
 		Plan:              req.Plan,
 		MaxDevices:        req.MaxDevices,
+		MaxUsersOverride:  req.MaxUsersOverride,
 		StorageLimitBytes: req.StorageLimitBytes,
 	}
 
@@ -11394,6 +11455,128 @@ func (s *Server) handleAdminUpdateAccount(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"success": true, "account": account})
+}
+
+func (s *Server) handleAdminReviewAccount(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	var req struct {
+		Status string `json:"status"`
+		Reason string `json:"reason"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
+	}
+	status := strings.TrimSpace(req.Status)
+	switch status {
+	case domain.AccountReviewStatusPending, domain.AccountReviewStatusApproved, domain.AccountReviewStatusRejected, domain.AccountReviewStatusSuspended:
+	default:
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Estado de revisión inválido"})
+	}
+	account, err := s.services.Account.GetByID(c.Context(), id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if account == nil {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Account not found"})
+	}
+	reviewerID := c.Locals("user_id").(uuid.UUID)
+	tx, err := s.repos.DB().Begin(c.Context())
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	defer tx.Rollback(c.Context())
+
+	if _, err := tx.Exec(c.Context(), `
+		UPDATE accounts
+		SET review_status = $2,
+		    is_active = CASE
+		        WHEN $2 IN ('rejected', 'suspended') THEN FALSE
+		        WHEN $2 = 'approved' THEN TRUE
+		        ELSE is_active
+		    END,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, id, status); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if _, err := tx.Exec(c.Context(), `
+		UPDATE account_signup_requests
+		SET status = $2, reviewed_by = $3, reviewed_at = NOW(), updated_at = NOW(),
+		    metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('review_reason', $4::text)
+		WHERE account_id = $1
+	`, id, status, reviewerID, strings.TrimSpace(req.Reason)); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if _, err := tx.Exec(c.Context(), `
+		UPDATE subscriptions
+		SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{review_status}', to_jsonb($2::text), TRUE),
+		    updated_at = NOW()
+		WHERE account_id = $1
+	`, id, status); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	if err := tx.Commit(c.Context()); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+
+	eventType := "account_review_updated"
+	switch status {
+	case domain.AccountReviewStatusApproved:
+		eventType = "account_approved"
+	case domain.AccountReviewStatusRejected:
+		eventType = "account_rejected"
+	case domain.AccountReviewStatusSuspended:
+		eventType = "account_suspended"
+	}
+	s.recordSecurityEventWithRefs(c.Context(), eventType, account.AccountCode, c, &id, &reviewerID, account.SignupRequestID, map[string]interface{}{
+		"status":       status,
+		"reason":       strings.TrimSpace(req.Reason),
+		"account_code": account.AccountCode,
+	})
+	updated, _ := s.services.Account.GetByID(c.Context(), id)
+	return c.JSON(fiber.Map{"success": true, "account": updated})
+}
+
+func (s *Server) handleAdminGetAccountEvents(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid ID"})
+	}
+	rows, err := s.repos.DB().Query(c.Context(), `
+		SELECT id, type, subject_hash, ip_hash, user_agent_hash, COALESCE(metadata, '{}'::jsonb), created_at
+		FROM security_events
+		WHERE account_id = $1
+		   OR signup_request_id = (SELECT signup_request_id FROM accounts WHERE id = $1)
+		ORDER BY created_at DESC
+		LIMIT 50
+	`, id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+	}
+	defer rows.Close()
+	events := make([]fiber.Map, 0)
+	for rows.Next() {
+		var eventID uuid.UUID
+		var eventType, subjectHash, ipHash, userAgentHash string
+		var metadata json.RawMessage
+		var createdAt time.Time
+		if err := rows.Scan(&eventID, &eventType, &subjectHash, &ipHash, &userAgentHash, &metadata, &createdAt); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
+		}
+		events = append(events, fiber.Map{
+			"id":              eventID,
+			"type":            eventType,
+			"subject_hash":    subjectHash,
+			"ip_hash":         ipHash,
+			"user_agent_hash": userAgentHash,
+			"metadata":        metadata,
+			"created_at":      createdAt,
+		})
+	}
+	return c.JSON(fiber.Map{"success": true, "events": events})
 }
 
 func (s *Server) handleAdminToggleAccount(c *fiber.Ctx) error {
@@ -11638,13 +11821,15 @@ func (s *Server) handleAdminCreateUser(c *fiber.Ctx) error {
 	}
 
 	user := &domain.User{
-		AccountID:    accountID,
-		Username:     req.Username,
-		Email:        req.Email,
-		DisplayName:  req.DisplayName,
-		Role:         primaryRole,
-		IsAdmin:      primaryRole == domain.RoleAdmin || primaryRole == domain.RoleSuperAdmin,
-		IsSuperAdmin: primaryRole == domain.RoleSuperAdmin,
+		AccountID:      accountID,
+		Username:       req.Username,
+		Email:          req.Email,
+		DisplayName:    req.DisplayName,
+		Role:           primaryRole,
+		IsAdmin:        primaryRole == domain.RoleAdmin || primaryRole == domain.RoleSuperAdmin,
+		IsSuperAdmin:   primaryRole == domain.RoleSuperAdmin,
+		CreationSource: domain.AccountCreationSourceManualAdmin,
+		EmailVerified:  true,
 	}
 
 	if err := s.services.Account.CreateUser(c.Context(), user, req.Password); err != nil {
@@ -11810,6 +11995,17 @@ func (s *Server) handleAdminResetPassword(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 
+	s.services.Auth.InvalidateUserSessions(id)
+	adminID, _ := c.Locals("user_id").(uuid.UUID)
+	targetUser, _ := s.services.Auth.GetUser(c.Context(), id)
+	var accountID *uuid.UUID
+	if targetUser != nil {
+		accountID = &targetUser.AccountID
+	}
+	s.recordSecurityEventWithRefs(c.Context(), "admin_password_changed", "", c, accountID, &id, nil, map[string]interface{}{
+		"changed_by": adminID.String(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
 }
 
@@ -11857,20 +12053,25 @@ func (s *Server) handleAdminGetRoles(c *fiber.Ctx) error {
 
 func (s *Server) handleAdminCreateRole(c *fiber.Ctx) error {
 	var req struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Permissions []string `json:"permissions"`
+		Name                  string   `json:"name"`
+		Description           string   `json:"description"`
+		IsPublicSignupDefault bool     `json:"is_public_signup_default"`
+		Permissions           []string `json:"permissions"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
 	}
 	role := &domain.Role{
-		Name:        strings.TrimSpace(req.Name),
-		Description: strings.TrimSpace(req.Description),
-		Permissions: sanitizeRolePermissions(req.Permissions),
+		Name:                  strings.TrimSpace(req.Name),
+		Description:           strings.TrimSpace(req.Description),
+		IsPublicSignupDefault: req.IsPublicSignupDefault,
+		Permissions:           sanitizeRolePermissions(req.Permissions),
 	}
 	if role.Name == "" {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Role name is required"})
+	}
+	if role.IsPublicSignupDefault && !isSafePublicSignupRole(role.Permissions) {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "El rol público por defecto no puede incluir permisos de administración"})
 	}
 	if err := s.repos.Role.Create(c.Context(), role); err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
@@ -11891,9 +12092,10 @@ func (s *Server) handleAdminUpdateRole(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": "Role not found"})
 	}
 	var req struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Permissions []string `json:"permissions"`
+		Name                  string   `json:"name"`
+		Description           string   `json:"description"`
+		IsPublicSignupDefault bool     `json:"is_public_signup_default"`
+		Permissions           []string `json:"permissions"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid request"})
@@ -11902,9 +12104,13 @@ func (s *Server) handleAdminUpdateRole(c *fiber.Ctx) error {
 		existing.Name = strings.TrimSpace(req.Name)
 	}
 	existing.Description = strings.TrimSpace(req.Description)
+	existing.IsPublicSignupDefault = req.IsPublicSignupDefault
 	existing.Permissions = sanitizeRolePermissions(req.Permissions)
 	if existing.Name == "" {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Role name is required"})
+	}
+	if existing.IsPublicSignupDefault && !isSafePublicSignupRole(existing.Permissions) {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "El rol público por defecto no puede incluir permisos de administración"})
 	}
 	if err := s.repos.Role.Update(c.Context(), existing); err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
@@ -11941,6 +12147,16 @@ func sanitizeRolePermissions(input []string) []string {
 	return out
 }
 
+func isSafePublicSignupRole(permissions []string) bool {
+	for _, permission := range permissions {
+		switch strings.TrimSpace(permission) {
+		case domain.PermAdmin, domain.PermAll:
+			return false
+		}
+	}
+	return true
+}
+
 // --- Switch Account Handler ---
 
 func (s *Server) handleSwitchAccount(c *fiber.Ctx) error {
@@ -11958,7 +12174,12 @@ func (s *Server) handleSwitchAccount(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Invalid account_id"})
 	}
 
-	token, refreshToken, user, err := s.services.Auth.SwitchAccount(c.Context(), userID, targetAccountID, s.cfg.JWTSecret)
+	claims, _ := c.Locals("claims").(*service.JWTClaims)
+	sessionID := ""
+	if claims != nil {
+		sessionID = claims.SessionID
+	}
+	token, refreshToken, user, err := s.services.Auth.SwitchAccount(c.Context(), userID, targetAccountID, sessionID, s.cfg.JWTSecret)
 	if err != nil {
 		return c.Status(403).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}

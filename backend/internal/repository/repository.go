@@ -102,13 +102,19 @@ type UserRepository struct {
 
 func (r *UserRepository) GetByUsername(ctx context.Context, username string) (*domain.User, error) {
 	user := &domain.User{}
+	username = strings.TrimSpace(username)
 	err := r.db.QueryRow(ctx, `
-		SELECT u.id, u.account_id, u.username, u.email, u.password_hash, u.display_name, u.is_admin, u.is_active, u.is_super_admin, u.role, u.created_at, u.updated_at, a.name
+		SELECT u.id, u.account_id, u.username, u.email, u.password_hash, u.display_name, u.is_admin, u.is_active, u.is_super_admin, u.role,
+		       COALESCE(u.creation_source, 'manual_admin'), COALESCE(u.email_verified, FALSE), u.last_login_at,
+		       u.created_at, u.updated_at,
+		       COALESCE(NULLIF(a.company_name, ''), a.name), COALESCE(a.account_code, ''), COALESCE(a.company_name, ''), COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved')
 		FROM users u JOIN accounts a ON a.id = u.account_id
-		WHERE u.username = $1 AND u.is_active = TRUE
+		WHERE (LOWER(u.username) = LOWER($1) OR LOWER(u.email) = LOWER($1)) AND u.is_active = TRUE
 	`, username).Scan(
 		&user.ID, &user.AccountID, &user.Username, &user.Email, &user.PasswordHash,
-		&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role, &user.CreatedAt, &user.UpdatedAt, &user.AccountName,
+		&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role,
+		&user.CreationSource, &user.EmailVerified, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.AccountName, &user.AccountCode, &user.AccountCompanyName, &user.AccountCreationSource, &user.AccountReviewStatus,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -119,12 +125,17 @@ func (r *UserRepository) GetByUsername(ctx context.Context, username string) (*d
 func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 	user := &domain.User{}
 	err := r.db.QueryRow(ctx, `
-		SELECT u.id, u.account_id, u.username, u.email, u.password_hash, u.display_name, u.is_admin, u.is_active, u.is_super_admin, u.role, u.created_at, u.updated_at, a.name
+		SELECT u.id, u.account_id, u.username, u.email, u.password_hash, u.display_name, u.is_admin, u.is_active, u.is_super_admin, u.role,
+		       COALESCE(u.creation_source, 'manual_admin'), COALESCE(u.email_verified, FALSE), u.last_login_at,
+		       u.created_at, u.updated_at,
+		       COALESCE(NULLIF(a.company_name, ''), a.name), COALESCE(a.account_code, ''), COALESCE(a.company_name, ''), COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved')
 		FROM users u JOIN accounts a ON a.id = u.account_id
 		WHERE u.id = $1
 	`, id).Scan(
 		&user.ID, &user.AccountID, &user.Username, &user.Email, &user.PasswordHash,
-		&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role, &user.CreatedAt, &user.UpdatedAt, &user.AccountName,
+		&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role,
+		&user.CreationSource, &user.EmailVerified, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.AccountName, &user.AccountCode, &user.AccountCompanyName, &user.AccountCreationSource, &user.AccountReviewStatus,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -135,7 +146,9 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Use
 func (r *UserRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID) ([]*domain.User, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT u.id, u.account_id, u.username, u.email, u.password_hash, u.display_name, u.is_admin, u.is_active, u.is_super_admin,
-		       COALESCE(ua.role, u.role), u.created_at, u.updated_at, a.name
+		       COALESCE(ua.role, u.role), COALESCE(u.creation_source, 'manual_admin'), COALESCE(u.email_verified, FALSE), u.last_login_at,
+		       u.created_at, u.updated_at,
+		       COALESCE(NULLIF(a.company_name, ''), a.name), COALESCE(a.account_code, ''), COALESCE(a.company_name, ''), COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved')
 		FROM user_accounts ua
 		JOIN users u ON u.id = ua.user_id
 		JOIN accounts a ON a.id = ua.account_id
@@ -152,7 +165,9 @@ func (r *UserRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID
 		user := &domain.User{}
 		if err := rows.Scan(
 			&user.ID, &user.AccountID, &user.Username, &user.Email, &user.PasswordHash,
-			&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role, &user.CreatedAt, &user.UpdatedAt, &user.AccountName,
+			&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role,
+			&user.CreationSource, &user.EmailVerified, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+			&user.AccountName, &user.AccountCode, &user.AccountCompanyName, &user.AccountCreationSource, &user.AccountReviewStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -163,7 +178,10 @@ func (r *UserRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID
 
 func (r *UserRepository) GetAll(ctx context.Context) ([]*domain.User, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT u.id, u.account_id, u.username, u.email, u.password_hash, u.display_name, u.is_admin, u.is_active, u.is_super_admin, u.role, u.created_at, u.updated_at, a.name
+		SELECT u.id, u.account_id, u.username, u.email, u.password_hash, u.display_name, u.is_admin, u.is_active, u.is_super_admin, u.role,
+		       COALESCE(u.creation_source, 'manual_admin'), COALESCE(u.email_verified, FALSE), u.last_login_at,
+		       u.created_at, u.updated_at,
+		       COALESCE(NULLIF(a.company_name, ''), a.name), COALESCE(a.account_code, ''), COALESCE(a.company_name, ''), COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved')
 		FROM users u JOIN accounts a ON a.id = u.account_id
 		ORDER BY u.created_at DESC
 	`)
@@ -177,7 +195,9 @@ func (r *UserRepository) GetAll(ctx context.Context) ([]*domain.User, error) {
 		user := &domain.User{}
 		if err := rows.Scan(
 			&user.ID, &user.AccountID, &user.Username, &user.Email, &user.PasswordHash,
-			&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role, &user.CreatedAt, &user.UpdatedAt, &user.AccountName,
+			&user.DisplayName, &user.IsAdmin, &user.IsActive, &user.IsSuperAdmin, &user.Role,
+			&user.CreationSource, &user.EmailVerified, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+			&user.AccountName, &user.AccountCode, &user.AccountCompanyName, &user.AccountCreationSource, &user.AccountReviewStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -187,11 +207,14 @@ func (r *UserRepository) GetAll(ctx context.Context) ([]*domain.User, error) {
 }
 
 func (r *UserRepository) Create(ctx context.Context, user *domain.User) error {
+	if user.CreationSource == "" {
+		user.CreationSource = domain.AccountCreationSourceManualAdmin
+	}
 	return r.db.QueryRow(ctx, `
-		INSERT INTO users (account_id, username, email, password_hash, display_name, is_admin, is_super_admin, role)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO users (account_id, username, email, password_hash, display_name, is_admin, is_super_admin, role, creation_source, email_verified)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, is_active, created_at, updated_at
-	`, user.AccountID, user.Username, user.Email, user.PasswordHash, user.DisplayName, user.IsAdmin, user.IsSuperAdmin, user.Role).Scan(
+	`, user.AccountID, user.Username, user.Email, user.PasswordHash, user.DisplayName, user.IsAdmin, user.IsSuperAdmin, user.Role, user.CreationSource, user.EmailVerified).Scan(
 		&user.ID, &user.IsActive, &user.CreatedAt, &user.UpdatedAt,
 	)
 }
@@ -212,7 +235,18 @@ func (r *UserRepository) Update(ctx context.Context, user *domain.User) error {
 }
 
 func (r *UserRepository) UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error {
-	_, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`, userID, passwordHash)
+	tag, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`, userID, passwordHash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func (r *UserRepository) MarkLoginSuccess(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`, userID)
 	return err
 }
 
@@ -255,7 +289,8 @@ type UserAccountRepository struct {
 func (r *UserAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*domain.UserAccount, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT ua.id, ua.user_id, ua.account_id, ua.role, ua.is_default, ua.created_at,
-		       a.name, COALESCE(a.slug, ''),
+		       COALESCE(NULLIF(a.company_name, ''), a.name), COALESCE(a.account_code, ''), COALESCE(a.company_name, ''), COALESCE(a.slug, ''),
+		       COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved'),
 		       ua.role_id, COALESCE(ro.name, ''), COALESCE(ro.permissions, '{}')
 		FROM user_accounts ua
 		JOIN accounts a ON a.id = ua.account_id
@@ -272,7 +307,8 @@ func (r *UserAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUI
 	for rows.Next() {
 		ua := &domain.UserAccount{}
 		if err := rows.Scan(&ua.ID, &ua.UserID, &ua.AccountID, &ua.Role, &ua.IsDefault, &ua.CreatedAt,
-			&ua.AccountName, &ua.AccountSlug, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
+			&ua.AccountName, &ua.AccountCode, &ua.AccountCompanyName, &ua.AccountSlug,
+			&ua.AccountCreationSource, &ua.AccountReviewStatus, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, ua)
@@ -283,7 +319,8 @@ func (r *UserAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUI
 func (r *UserAccountRepository) GetByAccountID(ctx context.Context, accountID uuid.UUID) ([]*domain.UserAccount, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT ua.id, ua.user_id, ua.account_id, ua.role, ua.is_default, ua.created_at,
-		       a.name, COALESCE(a.slug, ''),
+		       COALESCE(NULLIF(a.company_name, ''), a.name), COALESCE(a.account_code, ''), COALESCE(a.company_name, ''), COALESCE(a.slug, ''),
+		       COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved'),
 		       ua.role_id, COALESCE(ro.name, ''), COALESCE(ro.permissions, '{}')
 		FROM user_accounts ua
 		JOIN accounts a ON a.id = ua.account_id
@@ -300,7 +337,8 @@ func (r *UserAccountRepository) GetByAccountID(ctx context.Context, accountID uu
 	for rows.Next() {
 		ua := &domain.UserAccount{}
 		if err := rows.Scan(&ua.ID, &ua.UserID, &ua.AccountID, &ua.Role, &ua.IsDefault, &ua.CreatedAt,
-			&ua.AccountName, &ua.AccountSlug, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
+			&ua.AccountName, &ua.AccountCode, &ua.AccountCompanyName, &ua.AccountSlug,
+			&ua.AccountCreationSource, &ua.AccountReviewStatus, &ua.RoleID, &ua.RoleName, &ua.Permissions); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, ua)
@@ -463,13 +501,29 @@ type AccountRepository struct {
 
 func (r *AccountRepository) GetAll(ctx context.Context) ([]*domain.Account, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT a.id, a.name, COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices, COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true), a.created_at, a.updated_at,
+		SELECT a.id, COALESCE(a.account_code, ''), a.name, COALESCE(a.company_name, ''), COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices,
+			a.max_users_override,
+			COALESCE(a.max_users_override, (SELECT (pe.value_json #>> '{}')::int FROM plan_entitlements pe WHERE pe.plan_code = COALESCE(s.plan_code, a.plan) AND pe.key = 'max_users'), 0) AS max_users_effective,
+			COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true),
+			COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved'),
+			a.signup_request_id, COALESCE(a.signup_risk_score, 0), COALESCE(a.signup_risk_reasons, '[]'::jsonb),
+			a.created_at, a.updated_at,
 			COALESCE(s.status, 'active'), s.trial_ends_at, s.current_period_end, s.grace_ends_at,
 			(SELECT COUNT(*) FROM user_accounts WHERE account_id = a.id) as user_count,
 			(SELECT COUNT(*) FROM devices WHERE account_id = a.id) as device_count,
-			(SELECT COUNT(*) FROM chats WHERE account_id = a.id) as chat_count
+			(SELECT COUNT(*) FROM chats WHERE account_id = a.id) as chat_count,
+			COALESCE(sr.email, ''), COALESCE(sr.email_domain, ''), COALESCE(sr.contact_name, ''),
+			COALESCE(sr.ip_hash, ''), COALESCE(sr.fingerprint_hash, ''), COALESCE(sr.user_agent_hash, ''),
+			COALESCE(sr.turnstile_success, FALSE), COALESCE(sr.referrer, ''),
+			COALESCE(sr.utm_source, ''), COALESCE(sr.utm_medium, ''), COALESCE(sr.utm_campaign, ''), sr.created_at
 		FROM accounts a
 		LEFT JOIN subscriptions s ON s.account_id = a.id
+		LEFT JOIN LATERAL (
+			SELECT * FROM account_signup_requests req
+			WHERE req.account_id = a.id
+			ORDER BY req.created_at DESC
+			LIMIT 1
+		) sr ON TRUE
 		ORDER BY a.created_at DESC
 	`)
 	if err != nil {
@@ -480,9 +534,14 @@ func (r *AccountRepository) GetAll(ctx context.Context) ([]*domain.Account, erro
 	var accounts []*domain.Account
 	for rows.Next() {
 		a := &domain.Account{}
-		if err := rows.Scan(&a.ID, &a.Name, &a.Slug, &a.Plan, &a.MaxDevices, &a.StorageLimitBytes, &a.IsActive, &a.CreatedAt, &a.UpdatedAt,
+		if err := rows.Scan(&a.ID, &a.AccountCode, &a.Name, &a.CompanyName, &a.Slug, &a.Plan, &a.MaxDevices, &a.MaxUsersOverride, &a.MaxUsersEffective, &a.StorageLimitBytes, &a.IsActive,
+			&a.CreationSource, &a.ReviewStatus, &a.SignupRequestID, &a.SignupRiskScore, &a.SignupRiskReasons, &a.CreatedAt, &a.UpdatedAt,
 			&a.SubscriptionStatus, &a.TrialEndsAt, &a.CurrentPeriodEnd, &a.GraceEndsAt,
-			&a.UserCount, &a.DeviceCount, &a.ChatCount); err != nil {
+			&a.UserCount, &a.DeviceCount, &a.ChatCount,
+			&a.SignupEmail, &a.SignupEmailDomain, &a.SignupContactName,
+			&a.SignupIPHash, &a.SignupFingerprintHash, &a.SignupUserAgentHash,
+			&a.SignupTurnstileSuccess, &a.SignupReferrer,
+			&a.SignupUTMSource, &a.SignupUTMMedium, &a.SignupUTMCampaign, &a.SignupCreatedAt); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, a)
@@ -493,19 +552,40 @@ func (r *AccountRepository) GetAll(ctx context.Context) ([]*domain.Account, erro
 func (r *AccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Account, error) {
 	a := &domain.Account{}
 	err := r.db.QueryRow(ctx, `
-		SELECT a.id, a.name, COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices, COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true), a.default_incoming_stage_id, a.created_at, a.updated_at,
+		SELECT a.id, COALESCE(a.account_code, ''), a.name, COALESCE(a.company_name, ''), COALESCE(a.slug, ''), COALESCE(s.plan_code, a.plan), a.max_devices,
+			a.max_users_override,
+			COALESCE(a.max_users_override, (SELECT (pe.value_json #>> '{}')::int FROM plan_entitlements pe WHERE pe.plan_code = COALESCE(s.plan_code, a.plan) AND pe.key = 'max_users'), 0) AS max_users_effective,
+			COALESCE(a.storage_limit_bytes, 0), COALESCE(a.is_active, true),
+			COALESCE(a.creation_source, 'manual_admin'), COALESCE(a.review_status, 'approved'),
+			a.signup_request_id, COALESCE(a.signup_risk_score, 0), COALESCE(a.signup_risk_reasons, '[]'::jsonb),
+			a.default_incoming_stage_id, a.created_at, a.updated_at,
 			COALESCE(s.status, 'active'), s.trial_ends_at, s.current_period_end, s.grace_ends_at,
 			(SELECT COUNT(*) FROM user_accounts WHERE account_id = a.id) as user_count,
 			(SELECT COUNT(*) FROM devices WHERE account_id = a.id) as device_count,
 			(SELECT COUNT(*) FROM chats WHERE account_id = a.id) as chat_count,
-			a.google_email, a.google_contact_group_id, a.google_connected_at, COALESCE(a.google_sync_limit, 20000)
+			a.google_email, a.google_contact_group_id, a.google_connected_at, COALESCE(a.google_sync_limit, 20000),
+			COALESCE(sr.email, ''), COALESCE(sr.email_domain, ''), COALESCE(sr.contact_name, ''),
+			COALESCE(sr.ip_hash, ''), COALESCE(sr.fingerprint_hash, ''), COALESCE(sr.user_agent_hash, ''),
+			COALESCE(sr.turnstile_success, FALSE), COALESCE(sr.referrer, ''),
+			COALESCE(sr.utm_source, ''), COALESCE(sr.utm_medium, ''), COALESCE(sr.utm_campaign, ''), sr.created_at
 		FROM accounts a
 		LEFT JOIN subscriptions s ON s.account_id = a.id
+		LEFT JOIN LATERAL (
+			SELECT * FROM account_signup_requests req
+			WHERE req.account_id = a.id
+			ORDER BY req.created_at DESC
+			LIMIT 1
+		) sr ON TRUE
 		WHERE a.id = $1
-	`, id).Scan(&a.ID, &a.Name, &a.Slug, &a.Plan, &a.MaxDevices, &a.StorageLimitBytes, &a.IsActive, &a.DefaultIncomingStageID, &a.CreatedAt, &a.UpdatedAt,
+	`, id).Scan(&a.ID, &a.AccountCode, &a.Name, &a.CompanyName, &a.Slug, &a.Plan, &a.MaxDevices, &a.MaxUsersOverride, &a.MaxUsersEffective, &a.StorageLimitBytes, &a.IsActive,
+		&a.CreationSource, &a.ReviewStatus, &a.SignupRequestID, &a.SignupRiskScore, &a.SignupRiskReasons, &a.DefaultIncomingStageID, &a.CreatedAt, &a.UpdatedAt,
 		&a.SubscriptionStatus, &a.TrialEndsAt, &a.CurrentPeriodEnd, &a.GraceEndsAt,
 		&a.UserCount, &a.DeviceCount, &a.ChatCount,
-		&a.GoogleEmail, &a.GoogleContactGroupID, &a.GoogleConnectedAt, &a.GoogleSyncLimit)
+		&a.GoogleEmail, &a.GoogleContactGroupID, &a.GoogleConnectedAt, &a.GoogleSyncLimit,
+		&a.SignupEmail, &a.SignupEmailDomain, &a.SignupContactName,
+		&a.SignupIPHash, &a.SignupFingerprintHash, &a.SignupUserAgentHash,
+		&a.SignupTurnstileSuccess, &a.SignupReferrer,
+		&a.SignupUTMSource, &a.SignupUTMMedium, &a.SignupUTMCampaign, &a.SignupCreatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -513,18 +593,38 @@ func (r *AccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.
 }
 
 func (r *AccountRepository) Create(ctx context.Context, a *domain.Account) error {
+	if a.CompanyName == "" {
+		a.CompanyName = a.Name
+	}
+	if a.CreationSource == "" {
+		a.CreationSource = domain.AccountCreationSourceManualAdmin
+	}
+	if a.ReviewStatus == "" {
+		a.ReviewStatus = domain.AccountReviewStatusApproved
+	}
+	riskReasons := string(a.SignupRiskReasons)
+	if strings.TrimSpace(riskReasons) == "" {
+		riskReasons = "[]"
+	}
 	return r.db.QueryRow(ctx, `
-		INSERT INTO accounts (name, slug, plan, max_devices, storage_limit_bytes, is_active)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, created_at, updated_at
-	`, a.Name, a.Slug, a.Plan, a.MaxDevices, a.StorageLimitBytes, a.IsActive).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
+		INSERT INTO accounts (account_code, name, company_name, slug, plan, max_devices, max_users_override, storage_limit_bytes, is_active, creation_source, review_status, signup_risk_score, signup_risk_reasons)
+		VALUES (
+			COALESCE(NULLIF($1, ''), 'KIR-' || LPAD(nextval('account_code_seq')::text, 6, '0')),
+			$2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13::jsonb, '[]'::jsonb)
+		)
+		RETURNING id, account_code, created_at, updated_at
+	`, a.AccountCode, a.Name, a.CompanyName, a.Slug, a.Plan, a.MaxDevices, a.MaxUsersOverride, a.StorageLimitBytes, a.IsActive,
+		a.CreationSource, a.ReviewStatus, a.SignupRiskScore, riskReasons).Scan(&a.ID, &a.AccountCode, &a.CreatedAt, &a.UpdatedAt)
 }
 
 func (r *AccountRepository) Update(ctx context.Context, a *domain.Account) error {
+	if a.CompanyName == "" {
+		a.CompanyName = a.Name
+	}
 	_, err := r.db.Exec(ctx, `
-		UPDATE accounts SET name = $2, slug = $3, plan = $4, max_devices = $5, storage_limit_bytes = $6, updated_at = NOW()
+		UPDATE accounts SET name = $2, company_name = $3, slug = $4, plan = $5, max_devices = $6, max_users_override = $7, storage_limit_bytes = $8, updated_at = NOW()
 		WHERE id = $1
-	`, a.ID, a.Name, a.Slug, a.Plan, a.MaxDevices, a.StorageLimitBytes)
+	`, a.ID, a.Name, a.CompanyName, a.Slug, a.Plan, a.MaxDevices, a.MaxUsersOverride, a.StorageLimitBytes)
 	return err
 }
 
@@ -2249,6 +2349,36 @@ func (r *PipelineRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain
 	}
 	pipeline.Stages = stages
 	return pipeline, nil
+}
+
+func (r *PipelineRepository) GetByStageID(ctx context.Context, accountID, stageID uuid.UUID) (*domain.Pipeline, *domain.PipelineStage, error) {
+	pipeline := &domain.Pipeline{}
+	stage := &domain.PipelineStage{}
+	err := r.db.QueryRow(ctx, `
+		SELECT p.id, p.account_id, p.name, p.description, p.is_default, p.created_at, p.updated_at,
+		       ps.id, ps.pipeline_id, ps.name, ps.color, ps.position, ps.created_at,
+		       (SELECT COUNT(*) FROM leads WHERE stage_id = ps.id) as lead_count
+		FROM pipeline_stages ps
+		JOIN pipelines p ON p.id = ps.pipeline_id
+		WHERE ps.id = $1 AND p.account_id = $2
+	`, stageID, accountID).Scan(
+		&pipeline.ID, &pipeline.AccountID, &pipeline.Name, &pipeline.Description,
+		&pipeline.IsDefault, &pipeline.CreatedAt, &pipeline.UpdatedAt,
+		&stage.ID, &stage.PipelineID, &stage.Name, &stage.Color,
+		&stage.Position, &stage.CreatedAt, &stage.LeadCount,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	stages, err := r.GetStages(ctx, pipeline.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	pipeline.Stages = stages
+	return pipeline, stage, nil
 }
 
 func (r *PipelineRepository) Create(ctx context.Context, pipeline *domain.Pipeline) error {
@@ -4824,8 +4954,8 @@ type RoleRepository struct {
 
 func (r *RoleRepository) GetAll(ctx context.Context) ([]*domain.Role, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, name, description, is_system, COALESCE(permissions, '{}'), created_at, updated_at
-		FROM roles ORDER BY is_system DESC, name ASC
+		SELECT id, name, description, is_system, is_public_signup_default, COALESCE(permissions, '{}'), created_at, updated_at
+		FROM roles ORDER BY is_public_signup_default DESC, is_system DESC, name ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -4836,7 +4966,7 @@ func (r *RoleRepository) GetAll(ctx context.Context) ([]*domain.Role, error) {
 	for rows.Next() {
 		role := &domain.Role{}
 		if err := rows.Scan(&role.ID, &role.Name, &role.Description, &role.IsSystem,
-			&role.Permissions, &role.CreatedAt, &role.UpdatedAt); err != nil {
+			&role.IsPublicSignupDefault, &role.Permissions, &role.CreatedAt, &role.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if role.Permissions == nil {
@@ -4850,10 +4980,33 @@ func (r *RoleRepository) GetAll(ctx context.Context) ([]*domain.Role, error) {
 func (r *RoleRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Role, error) {
 	role := &domain.Role{}
 	err := r.db.QueryRow(ctx, `
-		SELECT id, name, description, is_system, COALESCE(permissions, '{}'), created_at, updated_at
+		SELECT id, name, description, is_system, is_public_signup_default, COALESCE(permissions, '{}'), created_at, updated_at
 		FROM roles WHERE id = $1
 	`, id).Scan(&role.ID, &role.Name, &role.Description, &role.IsSystem,
-		&role.Permissions, &role.CreatedAt, &role.UpdatedAt)
+		&role.IsPublicSignupDefault, &role.Permissions, &role.CreatedAt, &role.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if role.Permissions == nil {
+		role.Permissions = []string{}
+	}
+	return role, nil
+}
+
+func (r *RoleRepository) GetPublicSignupDefault(ctx context.Context) (*domain.Role, error) {
+	role := &domain.Role{}
+	err := r.db.QueryRow(ctx, `
+		SELECT id, name, description, is_system, is_public_signup_default, COALESCE(permissions, '{}'), created_at, updated_at
+		FROM roles
+		WHERE is_public_signup_default = TRUE
+		  AND NOT (COALESCE(permissions, '{}') && ARRAY[$1, $2]::text[])
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, domain.PermAdmin, domain.PermAll).Scan(&role.ID, &role.Name, &role.Description, &role.IsSystem,
+		&role.IsPublicSignupDefault, &role.Permissions, &role.CreatedAt, &role.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -4870,37 +5023,60 @@ func (r *RoleRepository) Create(ctx context.Context, role *domain.Role) error {
 	if role.Permissions == nil {
 		role.Permissions = []string{}
 	}
-	return r.db.QueryRow(ctx, `
-		INSERT INTO roles (name, description, is_system, permissions)
-		VALUES ($1, $2, FALSE, $3)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if role.IsPublicSignupDefault {
+		if _, err := tx.Exec(ctx, `UPDATE roles SET is_public_signup_default = FALSE WHERE is_public_signup_default = TRUE`); err != nil {
+			return err
+		}
+	}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO roles (name, description, is_system, is_public_signup_default, permissions)
+		VALUES ($1, $2, FALSE, $3, $4)
 		RETURNING id, created_at, updated_at
-	`, role.Name, role.Description, role.Permissions).Scan(&role.ID, &role.CreatedAt, &role.UpdatedAt)
+	`, role.Name, role.Description, role.IsPublicSignupDefault, role.Permissions).Scan(&role.ID, &role.CreatedAt, &role.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *RoleRepository) Update(ctx context.Context, role *domain.Role) error {
 	if role.Permissions == nil {
 		role.Permissions = []string{}
 	}
-	result, err := r.db.Exec(ctx, `
-		UPDATE roles SET name = $2, description = $3, permissions = $4, updated_at = NOW()
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if role.IsPublicSignupDefault {
+		if _, err := tx.Exec(ctx, `UPDATE roles SET is_public_signup_default = FALSE WHERE id <> $1 AND is_public_signup_default = TRUE`, role.ID); err != nil {
+			return err
+		}
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE roles SET name = $2, description = $3, permissions = $4, is_public_signup_default = $5, updated_at = NOW()
 		WHERE id = $1
-	`, role.ID, role.Name, role.Description, role.Permissions)
+	`, role.ID, role.Name, role.Description, role.Permissions, role.IsPublicSignupDefault)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("role not found")
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (r *RoleRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	result, err := r.db.Exec(ctx, `DELETE FROM roles WHERE id = $1 AND is_system = FALSE`, id)
+	result, err := r.db.Exec(ctx, `DELETE FROM roles WHERE id = $1 AND is_system = FALSE AND is_public_signup_default = FALSE`, id)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("role not found or cannot delete system role")
+		return fmt.Errorf("role not found or cannot delete system/default role")
 	}
 	return nil
 }

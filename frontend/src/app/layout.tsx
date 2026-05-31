@@ -53,7 +53,8 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: `
           (function() {
             function enableScroll() {
-              if (window.location.pathname !== '/' && window.location.pathname !== '') return;
+              var path = window.location.pathname;
+              if (path !== '/' && path !== '' && path !== '/login' && path !== '/signup') return;
               var html = document.documentElement;
               html.classList.add('public-page-scroll');
             }

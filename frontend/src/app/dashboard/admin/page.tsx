@@ -4,24 +4,45 @@ import { useEffect, useState } from 'react'
 import {
   Building2, Users, Plus, Pencil, Trash2, Power, KeyRound,
   Search, X, Shield, ChevronDown, Link2, Lock, CheckSquare, Square,
-  HardDrive, Database, AlertTriangle
+  HardDrive, Database, AlertTriangle, Eye, CheckCircle2, XCircle, Ban, Clock
 } from 'lucide-react'
 
 interface Account {
   id: string
+  account_code: string
   name: string
+  company_name: string
   slug: string
   plan: string
   max_devices: number
+  max_users_override?: number | null
+  max_users_effective?: number
   storage_limit_bytes: number
   is_active: boolean
-    subscription_status?: string
+  creation_source: string
+  review_status: string
+  signup_request_id?: string | null
+  signup_risk_score: number
+  signup_risk_reasons?: string[]
+  subscription_status?: string
   trial_ends_at?: string | null
   current_period_end?: string | null
   grace_ends_at?: string | null
   user_count: number
   device_count: number
   chat_count: number
+  signup_email?: string
+  signup_email_domain?: string
+  signup_contact_name?: string
+  signup_ip_hash?: string
+  signup_fingerprint_hash?: string
+  signup_user_agent_hash?: string
+  signup_turnstile_success?: boolean
+  signup_referrer?: string
+  signup_utm_source?: string
+  signup_utm_medium?: string
+  signup_utm_campaign?: string
+  signup_created_at?: string | null
   created_at: string
 }
 
@@ -45,7 +66,14 @@ interface User {
   is_admin: boolean
   is_super_admin: boolean
   is_active: boolean
+  creation_source: string
+  email_verified: boolean
+  last_login_at?: string | null
   account_name: string
+  account_code?: string
+  account_company_name?: string
+  account_creation_source?: string
+  account_review_status?: string
   accounts?: UserAccountAssignment[]
   created_at: string
 }
@@ -53,7 +81,11 @@ interface User {
 interface UserAccountAssignment {
   account_id: string
   account_name: string
+  account_code?: string
+  account_company_name?: string
   account_slug: string
+  account_creation_source?: string
+  account_review_status?: string
   role: string
   role_id?: string
   role_name?: string
@@ -61,11 +93,22 @@ interface UserAccountAssignment {
   is_default: boolean
 }
 
+interface SecurityEvent {
+  id: string
+  type: string
+  subject_hash: string
+  ip_hash: string
+  user_agent_hash: string
+  metadata?: Record<string, unknown>
+  created_at: string
+}
+
 interface Role {
   id: string
   name: string
   description: string
   is_system: boolean
+  is_public_signup_default: boolean
   permissions: string[]
   created_at: string
 }
@@ -132,10 +175,13 @@ export default function AdminPage() {
   const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [showAssignModal, setShowAssignModal] = useState(false)
   const [showPurgeModal, setShowPurgeModal] = useState(false)
+  const [detailAccount, setDetailAccount] = useState<Account | null>(null)
+  const [accountEvents, setAccountEvents] = useState<SecurityEvent[]>([])
+  const [accountEventsLoading, setAccountEventsLoading] = useState(false)
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [editingRole, setEditingRole] = useState<Role | null>(null)
-  const [roleForm, setRoleForm] = useState<{ name: string; description: string; permissions: string[] }>({ name: '', description: '', permissions: [] })
+  const [roleForm, setRoleForm] = useState<{ name: string; description: string; is_public_signup_default: boolean; permissions: string[] }>({ name: '', description: '', is_public_signup_default: false, permissions: [] })
   const [passwordUserId, setPasswordUserId] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [assignUserId, setAssignUserId] = useState('')
@@ -154,7 +200,7 @@ export default function AdminPage() {
 
   // Account form
   const [accountForm, setAccountForm] = useState({
-    name: '', slug: '', plan: 'basic', max_devices: 5, storage_limit_gb: 0,
+    name: '', company_name: '', slug: '', plan: 'basic', max_devices: 5, max_users_override: '', storage_limit_gb: 0,
     subscription_status: 'active', trial_ends_at: '', current_period_end: ''
   })
 
@@ -227,6 +273,7 @@ export default function AdminPage() {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      if (detailAccount) { setDetailAccount(null); return }
       if (showPasswordModal) { setShowPasswordModal(false); return }
       if (showPurgeModal) { setShowPurgeModal(false); return }
       if (showRoleModal) { setShowRoleModal(false); return }
@@ -236,12 +283,12 @@ export default function AdminPage() {
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [showPasswordModal, showPurgeModal, showRoleModal, showAssignModal, showUserModal, showAccountModal])
+  }, [detailAccount, showPasswordModal, showPurgeModal, showRoleModal, showAssignModal, showUserModal, showAccountModal])
 
   // Account CRUD
   function openCreateAccount() {
     setEditingAccount(null)
-    setAccountForm({ name: '', slug: '', plan: 'basic', max_devices: 5, storage_limit_gb: 0, subscription_status: 'active', trial_ends_at: '', current_period_end: '' })
+    setAccountForm({ name: '', company_name: '', slug: '', plan: 'basic', max_devices: 5, max_users_override: '', storage_limit_gb: 0, subscription_status: 'active', trial_ends_at: '', current_period_end: '' })
     setShowAccountModal(true)
   }
 
@@ -249,9 +296,11 @@ export default function AdminPage() {
     setEditingAccount(a)
     setAccountForm({
       name: a.name,
+      company_name: a.company_name || a.name,
       slug: a.slug,
       plan: a.plan,
       max_devices: a.max_devices,
+      max_users_override: a.max_users_override != null ? String(a.max_users_override) : '',
       storage_limit_gb: bytesToGb(a.storage_limit_bytes),
       subscription_status: a.subscription_status || 'active',
       trial_ends_at: dateInputValue(a.trial_ends_at),
@@ -268,9 +317,11 @@ export default function AdminPage() {
 
     const accountPayload = {
       name: accountForm.name,
+      company_name: accountForm.company_name,
       slug: accountForm.slug,
       plan: accountForm.plan,
       max_devices: accountForm.max_devices,
+      max_users_override: accountForm.max_users_override === '' ? null : Math.max(0, parseInt(accountForm.max_users_override, 10) || 0),
       storage_limit_bytes: gbToBytes(accountForm.storage_limit_gb),
     }
 
@@ -305,6 +356,40 @@ export default function AdminPage() {
   async function toggleAccount(id: string) {
     await fetch(`/api/admin/accounts/${id}/toggle`, { method: 'PATCH', headers })
     fetchAccounts()
+  }
+
+  async function openAccountDetail(account: Account) {
+    setDetailAccount(account)
+    setAccountEvents([])
+    setAccountEventsLoading(true)
+    try {
+      const res = await fetch(`/api/admin/accounts/${account.id}/events`, { headers })
+      const data = await res.json()
+      if (data.success) setAccountEvents(data.events || [])
+    } catch (e) {
+      console.error('Failed to fetch account events:', e)
+    } finally {
+      setAccountEventsLoading(false)
+    }
+  }
+
+  async function reviewAccount(account: Account, status: string) {
+    const reason = status === 'approved' ? '' : window.prompt('Motivo de la revisión (opcional):') || ''
+    const res = await fetch(`/api/admin/accounts/${account.id}/review`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status, reason }),
+    })
+    const data = await res.json()
+    if (!data.success) {
+      alert(data.error || 'No se pudo actualizar la revisión')
+      return
+    }
+    await fetchAccounts()
+    if (detailAccount?.id === account.id) {
+      setDetailAccount(data.account || { ...account, review_status: status, is_active: status === 'approved' ? true : account.is_active })
+      openAccountDetail(data.account || { ...account, review_status: status })
+    }
   }
 
   async function deleteAccount(id: string) {
@@ -441,6 +526,10 @@ export default function AdminPage() {
 
   async function resetPassword() {
     if (!newPassword) return
+    if (newPassword.length < 8) {
+      alert('La contraseña debe tener al menos 8 caracteres')
+      return
+    }
     const res = await fetch(`/api/admin/users/${passwordUserId}/password`, {
       method: 'PATCH', headers, body: JSON.stringify({ password: newPassword })
     })
@@ -508,6 +597,9 @@ export default function AdminPage() {
   }
 
   const filteredAccounts = accounts.filter(a =>
+    (a.account_code || '').toLowerCase().includes(search.toLowerCase()) ||
+    (a.company_name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (a.signup_email || '').toLowerCase().includes(search.toLowerCase()) ||
     a.name.toLowerCase().includes(search.toLowerCase()) ||
     a.plan.toLowerCase().includes(search.toLowerCase())
   )
@@ -515,6 +607,8 @@ export default function AdminPage() {
   const filteredUsers = users.filter(u =>
     u.username.toLowerCase().includes(search.toLowerCase()) ||
     u.email.toLowerCase().includes(search.toLowerCase()) ||
+    (u.account_code || '').toLowerCase().includes(search.toLowerCase()) ||
+    (u.account_company_name || '').toLowerCase().includes(search.toLowerCase()) ||
     (u.display_name || '').toLowerCase().includes(search.toLowerCase())
   )
 
@@ -526,13 +620,13 @@ export default function AdminPage() {
   // Role CRUD
   function openCreateRole() {
     setEditingRole(null)
-    setRoleForm({ name: '', description: '', permissions: [] })
+    setRoleForm({ name: '', description: '', is_public_signup_default: false, permissions: [] })
     setShowRoleModal(true)
   }
 
   function openEditRole(r: Role) {
     setEditingRole(r)
-    setRoleForm({ name: r.name, description: r.description, permissions: [...r.permissions] })
+    setRoleForm({ name: r.name, description: r.description, is_public_signup_default: Boolean(r.is_public_signup_default), permissions: [...r.permissions] })
     setShowRoleModal(true)
   }
 
@@ -547,6 +641,10 @@ export default function AdminPage() {
 
   async function saveRole() {
     if (!roleForm.name.trim()) { alert('El nombre del rol es requerido'); return }
+    if (roleForm.is_public_signup_default && (roleForm.permissions.includes('admin') || roleForm.permissions.includes('*'))) {
+      alert('El rol público por defecto no puede incluir el permiso Admin')
+      return
+    }
     const method = editingRole ? 'PUT' : 'POST'
     const url = editingRole ? `/api/admin/roles/${editingRole.id}` : '/api/admin/roles'
     const res = await fetch(url, { method, headers, body: JSON.stringify(roleForm) })
@@ -563,6 +661,7 @@ export default function AdminPage() {
     const role = roles.find(r => r.id === id)
     if (!role) return
     if (role.is_system) { alert('Los roles del sistema no pueden eliminarse'); return }
+    if (role.is_public_signup_default) { alert('Primero marca otro rol seguro como registro público antes de eliminar este.'); return }
     if (!confirm(`¿Eliminar el rol "${role.name}"? Los usuarios asignados a este rol perderán sus permisos.`)) return
     const res = await fetch(`/api/admin/roles/${id}`, { method: 'DELETE', headers })
     const data = await res.json()
@@ -601,6 +700,41 @@ export default function AdminPage() {
     incomplete: 'Incompleta',
   }
 
+  const sourceLabels: Record<string, string> = {
+    public_web: 'Web',
+    manual_admin: 'Manual',
+    migration: 'Migración',
+    api: 'API',
+  }
+
+  const sourceColors: Record<string, string> = {
+    public_web: 'bg-emerald-100 text-emerald-700',
+    manual_admin: 'bg-blue-100 text-blue-700',
+    migration: 'bg-slate-100 text-slate-600',
+    api: 'bg-cyan-100 text-cyan-700',
+  }
+
+  const reviewLabels: Record<string, string> = {
+    pending_review: 'En revisión',
+    approved: 'Aprobada',
+    rejected: 'Rechazada',
+    suspended: 'Suspendida',
+  }
+
+  const reviewColors: Record<string, string> = {
+    pending_review: 'bg-amber-100 text-amber-700',
+    approved: 'bg-emerald-100 text-emerald-700',
+    rejected: 'bg-red-100 text-red-700',
+    suspended: 'bg-rose-100 text-rose-700',
+  }
+
+  function riskLabel(score?: number) {
+    const value = score || 0
+    if (value >= 60) return { text: `Alto (${value})`, cls: 'bg-red-100 text-red-700' }
+    if (value >= 30) return { text: `Medio (${value})`, cls: 'bg-amber-100 text-amber-700' }
+    return { text: `Bajo (${value})`, cls: 'bg-emerald-100 text-emerald-700' }
+  }
+
   const fallbackPlans: Plan[] = [
     { code: 'basic', name: 'Basic', description: '', trial_days: 0, is_public: true, sort_order: 20 },
     { code: 'pro', name: 'Pro', description: '', trial_days: 14, is_public: true, sort_order: 40 },
@@ -608,6 +742,17 @@ export default function AdminPage() {
   ]
 
   const planOptions = plans.length > 0 ? plans : fallbackPlans
+
+  function planMaxUsers(planCode: string) {
+    const raw = planOptions.find(plan => plan.code === planCode)?.entitlements?.max_users
+    const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? parseInt(raw, 10) : undefined
+    return Number.isFinite(value) ? value : undefined
+  }
+
+  function userLimitLabel(account: Account) {
+    const effective = account.max_users_effective ?? planMaxUsers(account.plan)
+    return effective && effective > 0 ? `${account.user_count}/${effective}` : String(account.user_count)
+  }
 
   function dateInputValue(value?: string | null) {
     if (!value) return ''
@@ -756,11 +901,12 @@ export default function AdminPage() {
             <thead className="bg-gray-50 sticky top-0">
               <tr>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Cuenta</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Origen</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Revisión</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Riesgo</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Plan</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Suscripción</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-500">Usuarios</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-500">Dispositivos</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-500">Chats</th>
+                <th className="text-center px-4 py-3 font-medium text-gray-500">Uso</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-500">Espacio</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-500">Estado</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-500">Acciones</th>
@@ -768,12 +914,30 @@ export default function AdminPage() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {filteredAccounts.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">No se encontraron cuentas</td></tr>
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-400">No se encontraron cuentas</td></tr>
               ) : filteredAccounts.map(a => (
                 <tr key={a.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900">{a.name}</div>
-                    {a.slug && <div className="text-xs text-gray-400">{a.slug}</div>}
+                    <div className="font-semibold text-gray-900">{a.account_code || a.name}</div>
+                    <div className="text-sm text-gray-700">{a.company_name || a.name}</div>
+                    {a.signup_email && <div className="text-xs text-gray-400">{a.signup_email}</div>}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${sourceColors[a.creation_source] || 'bg-gray-100 text-gray-700'}`}>
+                      {sourceLabels[a.creation_source] || a.creation_source || 'Manual'}
+                    </span>
+                    <div className="text-[11px] text-gray-400 mt-1">{new Date(a.created_at).toLocaleDateString()}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${reviewColors[a.review_status] || 'bg-gray-100 text-gray-700'}`}>
+                      {reviewLabels[a.review_status] || a.review_status || 'Aprobada'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const risk = riskLabel(a.signup_risk_score)
+                      return <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${risk.cls}`}>{risk.text}</span>
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${planColors[a.plan] || 'bg-gray-100 text-gray-700'}`}>
@@ -792,9 +956,11 @@ export default function AdminPage() {
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-center text-gray-600">{a.user_count}</td>
-                  <td className="px-4 py-3 text-center text-gray-600">{a.device_count}/{a.max_devices}</td>
-                  <td className="px-4 py-3 text-center text-gray-600">{a.chat_count}</td>
+                  <td className="px-4 py-3 text-center text-gray-600">
+                    <div title="Usuarios">{userLimitLabel(a)} usr.</div>
+                    <div title="Dispositivos">{a.device_count}/{a.max_devices} disp.</div>
+                    <div title="Chats">{a.chat_count} chats</div>
+                  </td>
                   <td className="px-4 py-3 text-center text-gray-600">{formatBytes(a.storage_limit_bytes)}</td>
                   <td className="px-4 py-3 text-center">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${a.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
@@ -803,6 +969,19 @@ export default function AdminPage() {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
+                      <button onClick={() => openAccountDetail(a)} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded" title="Ver detalle">
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      {a.review_status !== 'approved' && (
+                        <button onClick={() => reviewAccount(a, 'approved')} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded" title="Aprobar">
+                          <CheckCircle2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      {a.review_status !== 'suspended' && (
+                        <button onClick={() => reviewAccount(a, 'suspended')} className="p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded" title="Suspender">
+                          <Ban className="w-4 h-4" />
+                        </button>
+                      )}
                       <button onClick={() => openEditAccount(a)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Editar">
                         <Pencil className="w-4 h-4" />
                       </button>
@@ -825,6 +1004,8 @@ export default function AdminPage() {
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Usuario</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Email</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Cuenta</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Origen</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">Último acceso</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-500">Rol</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-500">Estado</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-500">Acciones</th>
@@ -832,19 +1013,21 @@ export default function AdminPage() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {filteredUsers.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No se encontraron usuarios</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">No se encontraron usuarios</td></tr>
               ) : filteredUsers.map(u => (
                 <tr key={u.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{u.display_name || u.username}</div>
-                    <div className="text-xs text-gray-400">@{u.username}</div>
+                    <div className="text-xs text-gray-500">Usuario: {u.username}</div>
                   </td>
                   <td className="px-4 py-3 text-gray-600">{u.email}</td>
                   <td className="px-4 py-3 text-gray-600 max-w-[280px]">
                     <div className="flex flex-wrap gap-1">
                       {(u.accounts || []).length > 0 ? (u.accounts || []).map(ua => (
                         <span key={ua.account_id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700" title={ua.account_name}>
-                          {ua.account_name}
+                          {ua.account_code || ua.account_name}
+                          <span className="text-slate-400">·</span>
+                          {ua.account_company_name || ua.account_name}
                           <span className="text-slate-400">·</span>
                           {roleDisplay(ua.role, ua.role_id, ua.role_name)}
                         </span>
@@ -852,6 +1035,15 @@ export default function AdminPage() {
                         <span>{u.account_name}</span>
                       )}
                     </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${sourceColors[u.creation_source] || 'bg-gray-100 text-gray-700'}`}>
+                      {sourceLabels[u.creation_source] || u.creation_source || 'Manual'}
+                    </span>
+                    <div className="text-[11px] text-gray-400 mt-1">{u.email_verified ? 'Email verificado' : 'Email sin verificar'}</div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">
+                    {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : <span className="text-gray-400">Sin acceso</span>}
                   </td>
                   <td className="px-4 py-3 text-center">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${roleColors[u.role] || 'bg-gray-100 text-gray-700'}`}>
@@ -907,6 +1099,11 @@ export default function AdminPage() {
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{r.name}</div>
                     {r.description && <div className="text-xs text-gray-400 mt-0.5">{r.description}</div>}
+                    {r.is_public_signup_default && (
+                      <span className="inline-flex items-center gap-1 mt-2 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-700">
+                        <Shield className="w-3 h-3" /> Registro público
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
@@ -934,7 +1131,7 @@ export default function AdminPage() {
                       <button onClick={() => openEditRole(r)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Editar">
                         <Pencil className="w-4 h-4" />
                       </button>
-                      {!r.is_system && (
+                      {!r.is_system && !r.is_public_signup_default && (
                         <button onClick={() => deleteRole(r.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded" title="Eliminar">
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -948,11 +1145,110 @@ export default function AdminPage() {
 	        ) : null}
       </div>
 
+      {/* Account Detail Drawer */}
+      {detailAccount && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex justify-end">
+          <div className="bg-white h-full w-full max-w-2xl shadow-xl flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-semibold text-gray-900">{detailAccount.account_code || detailAccount.name}</h2>
+                  <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${reviewColors[detailAccount.review_status] || 'bg-gray-100 text-gray-700'}`}>
+                    {reviewLabels[detailAccount.review_status] || detailAccount.review_status}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-500 mt-1">{detailAccount.company_name || detailAccount.name}</p>
+              </div>
+              <button onClick={() => setDetailAccount(null)} className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              <section>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Control de cuenta</h3>
+                <div className="grid sm:grid-cols-2 gap-3 text-sm">
+                  <InfoTile label="Origen" value={sourceLabels[detailAccount.creation_source] || detailAccount.creation_source || 'Manual'} />
+                  <InfoTile label="Riesgo" value={riskLabel(detailAccount.signup_risk_score).text} />
+                  <InfoTile label="Plan" value={detailAccount.plan} />
+                  <InfoTile label="Suscripción" value={subscriptionLabels[detailAccount.subscription_status || 'active'] || detailAccount.subscription_status || 'Activa'} />
+                  <InfoTile label="Usuarios" value={userLimitLabel(detailAccount)} />
+                  <InfoTile label="Dispositivos" value={`${detailAccount.device_count}/${detailAccount.max_devices}`} />
+                  <InfoTile label="Chats" value={String(detailAccount.chat_count)} />
+                  <InfoTile label="Almacenamiento" value={formatBytes(detailAccount.storage_limit_bytes)} />
+                </div>
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Procedencia del registro</h3>
+                <div className="grid sm:grid-cols-2 gap-3 text-sm">
+                  <InfoTile label="Contacto" value={detailAccount.signup_contact_name || 'No registrado'} />
+                  <InfoTile label="Email" value={detailAccount.signup_email || 'No registrado'} />
+                  <InfoTile label="Dominio" value={detailAccount.signup_email_domain || 'No registrado'} />
+                  <InfoTile label="Turnstile" value={detailAccount.signup_turnstile_success ? 'Validado' : 'Sin dato'} />
+                  <InfoTile label="IP hash" value={shortHash(detailAccount.signup_ip_hash)} />
+                  <InfoTile label="Fingerprint hash" value={shortHash(detailAccount.signup_fingerprint_hash)} />
+                  <InfoTile label="User-agent hash" value={shortHash(detailAccount.signup_user_agent_hash)} />
+                  <InfoTile label="UTM" value={[detailAccount.signup_utm_source, detailAccount.signup_utm_medium, detailAccount.signup_utm_campaign].filter(Boolean).join(' / ') || 'Sin campaña'} />
+                </div>
+                {detailAccount.signup_referrer && (
+                  <div className="mt-3 text-xs text-gray-500 break-all">Referer: {detailAccount.signup_referrer}</div>
+                )}
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Acciones de revisión</h3>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => reviewAccount(detailAccount, 'approved')} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700">
+                    <CheckCircle2 className="w-4 h-4" /> Aprobar
+                  </button>
+                  <button onClick={() => reviewAccount(detailAccount, 'pending_review')} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-200 text-amber-700 text-sm font-medium hover:bg-amber-50">
+                    <Clock className="w-4 h-4" /> En revisión
+                  </button>
+                  <button onClick={() => reviewAccount(detailAccount, 'suspended')} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-rose-200 text-rose-700 text-sm font-medium hover:bg-rose-50">
+                    <Ban className="w-4 h-4" /> Suspender
+                  </button>
+                  <button onClick={() => reviewAccount(detailAccount, 'rejected')} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-red-200 text-red-700 text-sm font-medium hover:bg-red-50">
+                    <XCircle className="w-4 h-4" /> Rechazar
+                  </button>
+                </div>
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Eventos recientes</h3>
+                {accountEventsLoading ? (
+                  <div className="text-sm text-gray-400">Cargando eventos...</div>
+                ) : accountEvents.length === 0 ? (
+                  <div className="text-sm text-gray-400">Sin eventos registrados.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {accountEvents.map(event => (
+                      <div key={event.id} className="border border-gray-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-medium text-gray-900">{event.type}</span>
+                          <span className="text-xs text-gray-400">{new Date(event.created_at).toLocaleString()}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500">
+                          IP {shortHash(event.ip_hash)} · UA {shortHash(event.user_agent_hash)}
+                        </div>
+                        {event.metadata && (
+                          <pre className="mt-2 text-[11px] text-gray-500 bg-gray-50 rounded p-2 overflow-auto max-h-24">{JSON.stringify(event.metadata, null, 2)}</pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Role Modal */}
       {showRoleModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg">
-            <div className="p-6 border-b border-gray-200">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200 shrink-0">
               <h2 className="text-lg font-semibold text-gray-900">
                 {editingRole ? 'Editar Rol' : 'Nuevo Rol'}
               </h2>
@@ -963,8 +1259,9 @@ export default function AdminPage() {
                 </p>
               )}
             </div>
-            <div className="p-6 space-y-5">
-              <div>
+            <div className="px-5 py-4 space-y-4 overflow-y-auto">
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del rol</label>
                 <input
                   type="text"
@@ -974,8 +1271,8 @@ export default function AdminPage() {
                   placeholder="Ej: Vendedor, Soporte, Supervisor..."
                   disabled={editingRole?.is_system}
                 />
-              </div>
-              <div>
+                </div>
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Descripción (opcional)</label>
                 <input
                   type="text"
@@ -984,15 +1281,44 @@ export default function AdminPage() {
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
                   placeholder="Breve descripción del rol..."
                 />
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-3">
-                  Módulos accesibles
-                  <span className="ml-2 text-xs font-normal text-gray-400">
-                    ({roleForm.permissions.length} de {ALL_MODULES.length} seleccionados)
+              <label className={`flex items-start gap-3 rounded-lg border p-3 ${
+                roleForm.is_public_signup_default ? 'border-emerald-200 bg-emerald-50' : 'border-gray-200 bg-gray-50'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={roleForm.is_public_signup_default}
+                  onChange={e => setRoleForm(f => ({ ...f, is_public_signup_default: e.target.checked }))}
+                  className="mt-1 h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-gray-900">Usar como rol por defecto del registro público</span>
+                  <span className="block text-xs text-gray-500 mt-0.5">
+                    Se asignará a las cuentas free creadas desde la web. No puede incluir permisos de administración.
                   </span>
-                </label>
-                <div className="grid grid-cols-2 gap-2">
+                </span>
+              </label>
+              <div>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Módulos accesibles
+                    <span className="ml-2 text-xs font-normal text-gray-400">
+                      ({roleForm.permissions.length} de {ALL_MODULES.length} seleccionados)
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setRoleForm(f => ({
+                      ...f,
+                      permissions: f.permissions.length === ALL_MODULES.length ? [] : ALL_MODULES.map(m => m.key)
+                    }))}
+                    className="text-xs text-emerald-600 hover:underline shrink-0"
+                  >
+                    {roleForm.permissions.length === ALL_MODULES.length ? 'Quitar todos' : 'Seleccionar todos'}
+                  </button>
+                </div>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
                   {ALL_MODULES.map(mod => {
                     const active = roleForm.permissions.includes(mod.key)
                     return (
@@ -1015,23 +1341,22 @@ export default function AdminPage() {
                     )
                   })}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setRoleForm(f => ({
-                    ...f,
-                    permissions: f.permissions.length === ALL_MODULES.length ? [] : ALL_MODULES.map(m => m.key)
-                  }))}
-                  className="mt-3 text-xs text-emerald-600 hover:underline"
-                >
-                  {roleForm.permissions.length === ALL_MODULES.length ? 'Quitar todos' : 'Seleccionar todos'}
-                </button>
+                {roleForm.is_public_signup_default && (roleForm.permissions.includes('admin') || roleForm.permissions.includes('*')) && (
+                  <p className="mt-3 text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                    Quita el permiso Admin para poder usar este rol en registros públicos.
+                  </p>
+                )}
               </div>
             </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
+            <div className="px-5 py-4 border-t border-gray-200 flex justify-end gap-3 shrink-0 bg-white">
               <button onClick={() => setShowRoleModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
                 Cancelar
               </button>
-              <button onClick={saveRole} className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700">
+              <button
+                onClick={saveRole}
+                disabled={roleForm.is_public_signup_default && (roleForm.permissions.includes('admin') || roleForm.permissions.includes('*'))}
+                className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 {editingRole ? 'Guardar' : 'Crear Rol'}
               </button>
             </div>
@@ -1049,14 +1374,30 @@ export default function AdminPage() {
               </h2>
             </div>
             <div className="p-6 space-y-4">
+              {editingAccount?.account_code && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                  <span className="text-slate-500">Código interno:</span>{' '}
+                  <span className="font-semibold text-slate-900">{editingAccount.account_code}</span>
+                </div>
+              )}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre interno</label>
                 <input
                   type="text"
                   value={accountForm.name}
                   onChange={e => setAccountForm(f => ({ ...f, name: e.target.value }))}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
-                  placeholder="Nombre de la cuenta"
+                  placeholder="KIR-000001 o nombre administrativo"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Empresa visible</label>
+                <input
+                  type="text"
+                  value={accountForm.company_name}
+                  onChange={e => setAccountForm(f => ({ ...f, company_name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                  placeholder="Nombre comercial o empresa"
                 />
               </div>
               <div>
@@ -1069,7 +1410,7 @@ export default function AdminPage() {
                   placeholder="mi-cuenta"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Plan</label>
                   <select
@@ -1091,6 +1432,18 @@ export default function AdminPage() {
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
                     min={1}
                   />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Max Usuarios</label>
+                  <input
+                    type="number"
+                    value={accountForm.max_users_override}
+                    onChange={e => setAccountForm(f => ({ ...f, max_users_override: e.target.value === '' ? '' : String(Math.max(0, parseInt(e.target.value, 10) || 0)) }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                    min={0}
+                    placeholder={String(planMaxUsers(accountForm.plan) ?? '')}
+                  />
+                  <p className="mt-1 text-xs text-gray-400">Vacío usa el límite del plan.</p>
                 </div>
               </div>
               <div>
@@ -1292,6 +1645,15 @@ export default function AdminPage() {
             </div>
             <div className="p-6">
               <label className="block text-sm font-medium text-gray-700 mb-1">Nueva Contraseña</label>
+              {(() => {
+                const target = users.find(u => u.id === passwordUserId)
+                return target ? (
+                  <p className="mb-3 text-xs text-gray-500">
+                    Login: <span className="font-medium text-gray-700">{target.username}</span>
+                    {target.email && target.email !== target.username ? <> o <span className="font-medium text-gray-700">{target.email}</span></> : null}
+                  </p>
+                ) : null
+              })()}
               <input
                 type="password"
                 value={newPassword}
@@ -1465,6 +1827,20 @@ export default function AdminPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function shortHash(value?: string) {
+  if (!value) return 'Sin dato'
+  return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value
+}
+
+function InfoTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-gray-400">{label}</div>
+      <div className="mt-0.5 text-sm font-medium text-gray-800 break-words">{value}</div>
     </div>
   )
 }

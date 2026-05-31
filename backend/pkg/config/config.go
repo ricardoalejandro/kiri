@@ -32,6 +32,10 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURI  string
+	// Public signup abuse protection
+	TurnstileSiteKey          string
+	TurnstileSecretKey        string
+	BlockedSignupEmailDomains []string
 }
 
 func Load() *Config {
@@ -42,27 +46,30 @@ func Load() *Config {
 	}
 
 	return &Config{
-		DatabaseURL:        getEnv("DATABASE_URL", "postgres://kiri:kiri_secret_2026@localhost:5432/kiri?sslmode=disable"),
-		RedisURL:           getEnv("REDIS_URL", "redis://localhost:6379"),
-		JWTSecret:          getEnv("JWT_SECRET", "kiri_jwt_secret_change_in_production_2026"),
-		Port:               getEnv("PORT", "8080"),
-		Env:                getEnv("ENV", "development"),
-		AdminUser:          getEnv("ADMIN_USER", "admin"),
-		AdminPassword:      getEnv("ADMIN_PASSWORD", "kiri123"),
-		AdminEmail:         getEnv("ADMIN_EMAIL", "admin@kiri.local"),
-		CORSOrigins:        origins,
-		MinioEndpoint:      getEnv("MINIO_ENDPOINT", "localhost:9000"),
-		MinioAccessKey:     getEnv("MINIO_ACCESS_KEY", "kiriadmin"),
-		MinioSecretKey:     getEnv("MINIO_SECRET_KEY", "kiriadmin"),
-		MinioBucket:        getEnv("MINIO_BUCKET", "kiri-media"),
-		MinioUseSSL:        getEnv("MINIO_USE_SSL", "false") == "true",
-		MinioPublicURL:     getEnv("MINIO_PUBLIC_URL", "http://localhost:9000"),
-		PublicURL:          getEnv("PUBLIC_URL", ""),
-		GeminiAPIKey:       getEnv("GEMINI_API_KEY", ""),
-		GroqAPIKey:         getEnv("GROQ_API_KEY", ""),
-		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
-		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
-		GoogleRedirectURI:  getEnv("GOOGLE_REDIRECT_URI", ""),
+		DatabaseURL:               getEnv("DATABASE_URL", "postgres://kiri:kiri_secret_2026@localhost:5432/kiri?sslmode=disable"),
+		RedisURL:                  getEnv("REDIS_URL", "redis://localhost:6379"),
+		JWTSecret:                 getEnv("JWT_SECRET", "kiri_jwt_secret_change_in_production_2026"),
+		Port:                      getEnv("PORT", "8080"),
+		Env:                       getEnv("ENV", "development"),
+		AdminUser:                 getEnv("ADMIN_USER", "admin"),
+		AdminPassword:             getEnv("ADMIN_PASSWORD", "kiri123"),
+		AdminEmail:                getEnv("ADMIN_EMAIL", "admin@kiri.local"),
+		CORSOrigins:               origins,
+		MinioEndpoint:             getEnv("MINIO_ENDPOINT", "localhost:9000"),
+		MinioAccessKey:            getEnv("MINIO_ACCESS_KEY", "kiriadmin"),
+		MinioSecretKey:            getEnv("MINIO_SECRET_KEY", "kiriadmin"),
+		MinioBucket:               getEnv("MINIO_BUCKET", "kiri-media"),
+		MinioUseSSL:               getEnv("MINIO_USE_SSL", "false") == "true",
+		MinioPublicURL:            getEnv("MINIO_PUBLIC_URL", "http://localhost:9000"),
+		PublicURL:                 getEnv("PUBLIC_URL", ""),
+		GeminiAPIKey:              getEnv("GEMINI_API_KEY", ""),
+		GroqAPIKey:                getEnv("GROQ_API_KEY", ""),
+		GoogleClientID:            getEnv("GOOGLE_CLIENT_ID", ""),
+		GoogleClientSecret:        getEnv("GOOGLE_CLIENT_SECRET", ""),
+		GoogleRedirectURI:         getEnv("GOOGLE_REDIRECT_URI", ""),
+		TurnstileSiteKey:          getEnv("TURNSTILE_SITE_KEY", getEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "")),
+		TurnstileSecretKey:        getEnv("TURNSTILE_SECRET_KEY", ""),
+		BlockedSignupEmailDomains: splitCSVEnv("BLOCKED_SIGNUP_EMAIL_DOMAINS"),
 	}
 }
 
@@ -71,6 +78,22 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func splitCSVEnv(key string) []string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.ToLower(strings.TrimSpace(part))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func (c *Config) IsDevelopment() bool {

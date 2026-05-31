@@ -9,16 +9,25 @@ import (
 
 // Account represents a tenant in the multi-tenant system
 type Account struct {
-	ID                     uuid.UUID  `json:"id"`
-	Name                   string     `json:"name"`
-	Slug                   string     `json:"slug"`
-	Plan                   string     `json:"plan"`
-	MaxDevices             int        `json:"max_devices"`
-	StorageLimitBytes      int64      `json:"storage_limit_bytes"`
-	IsActive               bool       `json:"is_active"`
-	DefaultIncomingStageID *uuid.UUID `json:"default_incoming_stage_id,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	ID                     uuid.UUID       `json:"id"`
+	AccountCode            string          `json:"account_code"`
+	Name                   string          `json:"name"`
+	CompanyName            string          `json:"company_name"`
+	Slug                   string          `json:"slug"`
+	Plan                   string          `json:"plan"`
+	MaxDevices             int             `json:"max_devices"`
+	MaxUsersOverride       *int            `json:"max_users_override,omitempty"`
+	MaxUsersEffective      int             `json:"max_users_effective,omitempty"`
+	StorageLimitBytes      int64           `json:"storage_limit_bytes"`
+	IsActive               bool            `json:"is_active"`
+	CreationSource         string          `json:"creation_source"`
+	ReviewStatus           string          `json:"review_status"`
+	SignupRequestID        *uuid.UUID      `json:"signup_request_id,omitempty"`
+	SignupRiskScore        int             `json:"signup_risk_score"`
+	SignupRiskReasons      json.RawMessage `json:"signup_risk_reasons,omitempty"`
+	DefaultIncomingStageID *uuid.UUID      `json:"default_incoming_stage_id,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	UpdatedAt              time.Time       `json:"updated_at"`
 
 	// Google Contacts integration
 	GoogleEmail          *string    `json:"google_email,omitempty"`
@@ -39,7 +48,33 @@ type Account struct {
 	TrialEndsAt        *time.Time `json:"trial_ends_at,omitempty"`
 	CurrentPeriodEnd   *time.Time `json:"current_period_end,omitempty"`
 	GraceEndsAt        *time.Time `json:"grace_ends_at,omitempty"`
+
+	// Signup provenance snapshot populated for super-admin views.
+	SignupEmail            string     `json:"signup_email,omitempty"`
+	SignupEmailDomain      string     `json:"signup_email_domain,omitempty"`
+	SignupContactName      string     `json:"signup_contact_name,omitempty"`
+	SignupIPHash           string     `json:"signup_ip_hash,omitempty"`
+	SignupFingerprintHash  string     `json:"signup_fingerprint_hash,omitempty"`
+	SignupUserAgentHash    string     `json:"signup_user_agent_hash,omitempty"`
+	SignupTurnstileSuccess bool       `json:"signup_turnstile_success"`
+	SignupReferrer         string     `json:"signup_referrer,omitempty"`
+	SignupUTMSource        string     `json:"signup_utm_source,omitempty"`
+	SignupUTMMedium        string     `json:"signup_utm_medium,omitempty"`
+	SignupUTMCampaign      string     `json:"signup_utm_campaign,omitempty"`
+	SignupCreatedAt        *time.Time `json:"signup_created_at,omitempty"`
 }
+
+const (
+	AccountCreationSourceManualAdmin = "manual_admin"
+	AccountCreationSourcePublicWeb   = "public_web"
+	AccountCreationSourceMigration   = "migration"
+	AccountCreationSourceAPI         = "api"
+
+	AccountReviewStatusPending   = "pending_review"
+	AccountReviewStatusApproved  = "approved"
+	AccountReviewStatusRejected  = "rejected"
+	AccountReviewStatusSuspended = "suspended"
+)
 
 const (
 	SubscriptionStatusTrialing   = "trialing"
@@ -117,26 +152,33 @@ type SubscriptionOverview struct {
 
 // User represents a user in the system
 type User struct {
-	ID               uuid.UUID `json:"id"`
-	AccountID        uuid.UUID `json:"account_id"`
-	Username         string    `json:"username"`
-	Email            string    `json:"email"`
-	PasswordHash     string    `json:"-"`
-	DisplayName      string    `json:"display_name"`
-	Role             string    `json:"role"` // super_admin, admin, agent
-	IsAdmin          bool      `json:"is_admin"`
-	IsSuperAdmin     bool      `json:"is_super_admin"`
-	IsActive         bool      `json:"is_active"`
-	GroqAPIKey       string    `json:"-"`
-	ErosModel        string    `json:"eros_model,omitempty"`
-	ErosRole         string    `json:"eros_role,omitempty"`
-	ErosInstructions string    `json:"eros_instructions,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               uuid.UUID  `json:"id"`
+	AccountID        uuid.UUID  `json:"account_id"`
+	Username         string     `json:"username"`
+	Email            string     `json:"email"`
+	PasswordHash     string     `json:"-"`
+	DisplayName      string     `json:"display_name"`
+	Role             string     `json:"role"` // super_admin, admin, agent
+	IsAdmin          bool       `json:"is_admin"`
+	IsSuperAdmin     bool       `json:"is_super_admin"`
+	IsActive         bool       `json:"is_active"`
+	CreationSource   string     `json:"creation_source"`
+	EmailVerified    bool       `json:"email_verified"`
+	LastLoginAt      *time.Time `json:"last_login_at,omitempty"`
+	GroqAPIKey       string     `json:"-"`
+	ErosModel        string     `json:"eros_model,omitempty"`
+	ErosRole         string     `json:"eros_role,omitempty"`
+	ErosInstructions string     `json:"eros_instructions,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 
 	// Populated on demand
-	AccountName string        `json:"account_name,omitempty"`
-	Accounts    []UserAccount `json:"accounts,omitempty"`
+	AccountName           string        `json:"account_name,omitempty"`
+	AccountCode           string        `json:"account_code,omitempty"`
+	AccountCompanyName    string        `json:"account_company_name,omitempty"`
+	AccountCreationSource string        `json:"account_creation_source,omitempty"`
+	AccountReviewStatus   string        `json:"account_review_status,omitempty"`
+	Accounts              []UserAccount `json:"accounts,omitempty"`
 }
 
 // User role constants
@@ -175,13 +217,14 @@ var AllPermissions = []string{
 
 // Role represents a named set of module permissions
 type Role struct {
-	ID          uuid.UUID `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	IsSystem    bool      `json:"is_system"`
-	Permissions []string  `json:"permissions"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID                    uuid.UUID `json:"id"`
+	Name                  string    `json:"name"`
+	Description           string    `json:"description"`
+	IsSystem              bool      `json:"is_system"`
+	IsPublicSignupDefault bool      `json:"is_public_signup_default"`
+	Permissions           []string  `json:"permissions"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // UserAccount represents a user's assignment to an account (many-to-many)
@@ -195,10 +238,14 @@ type UserAccount struct {
 	CreatedAt time.Time  `json:"created_at"`
 
 	// Populated on demand
-	AccountName string   `json:"account_name,omitempty"`
-	AccountSlug string   `json:"account_slug,omitempty"`
-	RoleName    string   `json:"role_name,omitempty"`
-	Permissions []string `json:"permissions,omitempty"`
+	AccountName           string   `json:"account_name,omitempty"`
+	AccountCode           string   `json:"account_code,omitempty"`
+	AccountCompanyName    string   `json:"account_company_name,omitempty"`
+	AccountSlug           string   `json:"account_slug,omitempty"`
+	AccountCreationSource string   `json:"account_creation_source,omitempty"`
+	AccountReviewStatus   string   `json:"account_review_status,omitempty"`
+	RoleName              string   `json:"role_name,omitempty"`
+	Permissions           []string `json:"permissions,omitempty"`
 }
 
 // Device represents a WhatsApp connection
